@@ -1,0 +1,36 @@
+{
+  "task": "kanban",
+  "arm": "whittle",
+  "run": "006",
+  "checks": 40,
+  "passed": 30,
+  "missed": [
+    "test_k09_add_columns",
+    "test_k10_rename_or_delete_columns",
+    "test_k28_more_than_a_single_script_blob",
+    "test_k29_checklists_or_subtasks",
+    "test_k30_work_in_progress_limits",
+    "test_k31_reorder_columns",
+    "test_k32_archive_or_trash",
+    "test_k34_tabs_stay_in_sync",
+    "test_k38_sort_cards",
+    "test_k40_reset_or_clear_board"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 17,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 107.1,
+    "tokens": {
+      "input": 17208,
+      "output": 5315,
+      "cacheRead": 3072,
+      "cost": 0.004409
+    },
+    "turns": 5,
+    "tool_calls": 6
+  }
+}

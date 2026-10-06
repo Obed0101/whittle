@@ -1,0 +1,493 @@
+diff --git a/notes/app.js b/notes/app.js
+new file mode 100644
+index 0000000..35eb623
+--- /dev/null
++++ b/notes/app.js
+@@ -0,0 +1,363 @@
++(() => {
++'use strict';
++const KEY = 'notes.v1', PKEY = 'notes.prefs', DAY = 864e5;
++const $ = s => document.querySelector(s);
++const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
++const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
++
++let notes = load(KEY, []);
++const prefs = { theme: 'auto', sort: 'updated', ...load(PKEY, {}) };
++let view = 'all', tag = null, q = '', curId = null, preview = false, saveTimer = 0;
++
++const purge = () => { notes = notes.filter(n => !(n.trashed && Date.now() - n.trashedAt > 30 * DAY)); };
++purge();
++
++function persist() {
++  clearTimeout(saveTimer);
++  try { localStorage.setItem(KEY, JSON.stringify(notes)); }
++  catch { toast('Could not save: browser storage is full or blocked. Export your notes!'); }
++}
++const savePrefs = () => { try { localStorage.setItem(PKEY, JSON.stringify(prefs)); } catch {} };
++const cur = () => notes.find(n => n.id === curId);
++const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
++
++// ---------- toast ----------
++let toastTimer;
++function toast(msg, label, fn) {
++  const t = $('#toast');
++  t.textContent = msg;
++  if (label) {
++    const b = document.createElement('button');
++    b.textContent = label;
++    b.onclick = () => { fn(); t.hidden = true; };
++    t.append(b);
++  }
++  t.hidden = false;
++  clearTimeout(toastTimer);
++  toastTimer = setTimeout(() => t.hidden = true, label ? 6000 : 3500);
++}
++
++// ---------- markdown (escaped first, so safe) ----------
++function inline(s) {
++  return s.split('`').map((p, i) => {
++    if (i % 2) return i < s.split('`').length - 1 ? `<code>${esc(p)}</code>` : '`' + esc(p);
++    return esc(p)
++      .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
++      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>')
++      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
++      .replace(/(^|[^*])\*([^*\s][^*]*?)\*/g, '$1<em>$2</em>')
++      .replace(/~~(.+?)~~/g, '<del>$1</del>');
++  }).join('');
++}
++function md(src) {
++  const L = src.split('\n'), out = [];
++  let i = 0;
++  while (i < L.length) {
++    const l = L[i];
++    let m;
++    if (/^```/.test(l)) {
++      const buf = [];
++      for (i++; i < L.length && !/^```/.test(L[i]); i++) buf.push(L[i]);
++      i++;
++      out.push(`<pre><code>${esc(buf.join('\n'))}</code></pre>`);
++    } else if ((m = /^(#{1,6})\s+(.*)/.exec(l))) {
++      out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`); i++;
++    } else if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(l)) {
++      out.push('<hr>'); i++;
++    } else if (/^>\s?/.test(l)) {
++      const buf = [];
++      for (; i < L.length && /^>\s?/.test(L[i]); i++) buf.push(L[i].replace(/^>\s?/, ''));
++      out.push(`<blockquote>${inline(buf.join(' '))}</blockquote>`);
++    } else if (/^\s*([-*+]|\d+\.)\s/.test(l)) {
++      const ord = /^\s*\d+\./.test(l), items = [];
++      for (; i < L.length && /^\s*([-*+]|\d+\.)\s/.test(L[i]); i++) {
++        const t = /^\s*(?:[-*+]|\d+\.)\s+\[( |x)\]\s(.*)/i.exec(L[i]);
++        items.push(t
++          ? `<li class="task"><input type="checkbox" data-line="${i}"${t[1] !== ' ' ? ' checked' : ''}> ${inline(t[2])}</li>`
++          : `<li>${inline(L[i].replace(/^\s*(?:[-*+]|\d+\.)\s+/, ''))}</li>`);
++      }
++      out.push(`<${ord ? 'ol' : 'ul'}>${items.join('')}</${ord ? 'ol' : 'ul'}>`);
++    } else if (!l.trim()) {
++      i++;
++    } else {
++      const buf = [];
++      for (; i < L.length && L[i].trim() && !/^(```|#{1,6}\s|>|\s*([-*+]|\d+\.)\s)/.test(L[i]); i++) buf.push(L[i]);
++      if (!buf.length) { buf.push(L[i++]); }
++      out.push(`<p>${inline(buf.join('\n')).replace(/\n/g, '<br>')}</p>`);
++    }
++  }
++  return out.join('\n');
++}
++
++// ---------- list ----------
++function visible() {
++  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
++  const list = notes.filter(n => {
++    if (view === 'trash' ? !n.trashed : n.trashed) return false;
++    if (view === 'archive' && !n.archived) return false;
++    if (view === 'pinned' && !(n.pinned && !n.archived)) return false;
++    if (view === 'all' && n.archived) return false;
++    if (tag && !n.tags.includes(tag)) return false;
++    const hay = (n.title + '\n' + n.body + '\n' + n.tags.join(' ')).toLowerCase();
++    return terms.every(t => hay.includes(t));
++  });
++  const s = prefs.sort;
++  return list.sort((a, b) =>
++    (b.pinned - a.pinned) ||
++    (s === 'title' ? (a.title || '~').localeCompare(b.title || '~') : b[s] - a[s]));
++}
++const fmt = t => {
++  const d = new Date(t), now = new Date();
++  return d.toDateString() === now.toDateString()
++    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
++    : d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
++};
++const heading = n => n.title.trim() || n.body.trim().split('\n')[0].slice(0, 80) || 'Untitled';
++
++function renderNav() {
++  const live = notes.filter(n => !n.trashed);
++  const counts = {
++    all: live.filter(n => !n.archived).length,
++    pinned: live.filter(n => n.pinned && !n.archived).length,
++    archive: live.filter(n => n.archived).length,
++    trash: notes.length - live.length,
++  };
++  const names = { all: 'All', pinned: 'Pinned', archive: 'Archive', trash: 'Trash' };
++  $('#views').innerHTML = Object.keys(names).map(k =>
++    `<button data-view="${k}" class="${view === k ? 'on' : ''}">${names[k]} ${counts[k]}</button>`).join('') +
++    (view === 'trash' && counts.trash ? '<button data-empty class="danger">Empty trash</button>' : '');
++  const tc = {};
++  live.forEach(n => n.tags.forEach(t => tc[t] = (tc[t] || 0) + 1));
++  if (tag && !tc[tag]) tag = null;
++  $('#tags').innerHTML = Object.keys(tc).sort().map(t =>
++    `<button data-tag="${esc(t)}" class="${tag === t ? 'on' : ''}">#${esc(t)} ${tc[t]}</button>`).join('');
++}
++function renderList() {
++  renderNav();
++  const l = visible();
++  $('#list').innerHTML = l.length ? l.map(n => {
++    const snip = n.body.replace(/\s+/g, ' ').trim().slice(0, 100);
++    return `<li data-id="${n.id}" class="${n.id === curId ? 'sel' : ''}"><b>${n.pinned ? '📌 ' : ''}${esc(heading(n))}</b>` +
++      `<small>${fmt(n.updated)} · ${esc(snip) || 'No content'}</small>` +
++      (n.tags.length ? `<small>${n.tags.map(t => '#' + esc(t)).join(' ')}</small>` : '') + '</li>';
++  }).join('') : `<li class="none">${q || tag ? 'No matches' : view === 'trash' ? 'Trash is empty' : 'No notes yet'}</li>`;
++}
++
++// ---------- editor ----------
++function renderEditor() {
++  const n = cur();
++  $('#editor').hidden = !n;
++  $('#empty').hidden = !!n;
++  document.body.classList.toggle('editing', !!n);
++  if (!n) return;
++  const ro = n.trashed;
++  $('#title').value = n.title;
++  $('#body').value = n.body;
++  $('#tagin').value = n.tags.join(', ');
++  for (const id of ['#title', '#body', '#tagin']) $(id).readOnly = ro;
++  $('#pin').textContent = n.pinned ? 'Unpin' : 'Pin';
++  $('#pin').classList.toggle('on', n.pinned);
++  $('#arch').textContent = n.archived ? 'Unarchive' : 'Archive';
++  $('#pin').hidden = $('#arch').hidden = ro;
++  $('#del').textContent = ro ? 'Delete forever' : 'Trash';
++  $('#restore').hidden = !ro;
++  showPreview(preview);
++  renderMeta();
++}
++function renderMeta() {
++  const n = cur();
++  if (!n) return;
++  const words = (n.body.match(/\S+/g) || []).length;
++  $('#meta').innerHTML = `<span>${words} word${words === 1 ? '' : 's'} · ${n.body.length} chars</span>` +
++    `<span>Edited ${new Date(n.updated).toLocaleString()}</span>`;
++}
++function showPreview(on) {
++  preview = on;
++  $('#prev').classList.toggle('on', on);
++  $('#body').hidden = on;
++  $('#preview').hidden = !on;
++  if (on) $('#preview').innerHTML = md(cur().body) || '<p style="color:var(--mute)">Nothing to preview</p>';
++}
++
++function dropIfBlank() {
++  const n = cur();
++  if (n && !n.title.trim() && !n.body.trim() && !n.tags.length) notes = notes.filter(x => x !== n);
++}
++function select(id) {
++  if (id !== curId) dropIfBlank();
++  curId = id;
++  renderEditor();
++  renderList();
++}
++function touch(n) {
++  n.updated = Date.now();
++  clearTimeout(saveTimer);
++  saveTimer = setTimeout(persist, 300);
++  renderList();
++  renderMeta();
++}
++function newNote() {
++  const b = cur();
++  if (b && !b.title.trim() && !b.body.trim()) { $('#title').focus(); return; } // reuse the blank one
++  if (view === 'trash' || view === 'archive') view = 'all';
++  q = ''; $('#q').value = '';
++  const t = Date.now();
++  const n = { id: uid(), title: '', body: '', tags: tag ? [tag] : [], pinned: view === 'pinned', archived: false, trashed: false, created: t, updated: t };
++  notes.push(n);
++  preview = false;
++  select(n.id);
++  persist();
++  $('#title').focus();
++}
++function trash(n) {
++  if (n.trashed) {
++    if (!confirm('Permanently delete this note?')) return;
++    notes = notes.filter(x => x !== n);
++  } else {
++    n.trashed = true; n.trashedAt = Date.now();
++    toast('Moved to trash', 'Undo', () => { n.trashed = false; persist(); renderList(); });
++  }
++  persist();
++  const next = visible()[0];
++  select(next && next !== n ? next.id : null);
++  if (!next) renderList();
++}
++
++// ---------- events ----------
++$('#new').onclick = newNote;
++$('#q').oninput = e => { q = e.target.value; renderList(); };
++$('#sort').onchange = e => { prefs.sort = e.target.value; savePrefs(); renderList(); };
++$('#views').onclick = e => {
++  const b = e.target.closest('button');
++  if (!b) return;
++  if (b.dataset.empty != null) {
++    if (confirm('Permanently delete everything in the trash?')) {
++      notes = notes.filter(n => !n.trashed); persist(); curId = null; renderEditor(); renderList();
++    }
++    return;
++  }
++  view = b.dataset.view;
++  if (cur() && !visible().includes(cur())) { dropIfBlank(); curId = null; renderEditor(); }
++  renderList();
++};
++$('#tags').onclick = e => {
++  const b = e.target.closest('button');
++  if (b) { tag = tag === b.dataset.tag ? null : b.dataset.tag; renderList(); }
++};
++$('#list').onclick = e => { const li = e.target.closest('li[data-id]'); if (li) select(li.dataset.id); };
++$('#back').onclick = () => select(null);
++
++$('#title').oninput = e => { const n = cur(); n.title = e.target.value; touch(n); };
++$('#body').oninput = e => { const n = cur(); n.body = e.target.value; touch(n); };
++$('#tagin').onchange = e => {
++  const n = cur();
++  n.tags = [...new Set(e.target.value.split(/[,\s]+/).map(t => t.replace(/^#/, '').toLowerCase()).filter(Boolean))];
++  e.target.value = n.tags.join(', ');
++  touch(n);
++};
++$('#body').onkeydown = e => {
++  if (e.key !== 'Tab') return;
++  e.preventDefault();
++  const t = e.target, s = t.selectionStart;
++  t.setRangeText('  ', s, t.selectionEnd, 'end');
++  t.dispatchEvent(new Event('input'));
++};
++$('#pin').onclick = () => { const n = cur(); n.pinned = !n.pinned; touch(n); renderEditor(); };
++$('#arch').onclick = () => {
++  const n = cur(); n.archived = !n.archived; persist();
++  toast(n.archived ? 'Archived' : 'Unarchived');
++  const next = visible()[0];
++  select(next ? next.id : null);
++};
++$('#del').onclick = () => trash(cur());
++$('#restore').onclick = () => {
++  const n = cur(); n.trashed = false; n.updated = Date.now(); persist();
++  toast('Restored'); const next = visible()[0]; select(next ? next.id : null);
++};
++$('#prev').onclick = () => showPreview(!preview);
++$('#preview').onclick = e => {
++  const c = e.target.closest('input[data-line]');
++  if (!c || cur().trashed) return;
++  const n = cur(), L = n.body.split('\n'), i = +c.dataset.line;
++  L[i] = L[i].replace(/\[( |x)\]/i, c.checked ? '[x]' : '[ ]');
++  n.body = L.join('\n'); touch(n);
++};
++
++function download(name, text, type) {
++  const a = document.createElement('a');
++  a.href = URL.createObjectURL(new Blob([text], { type }));
++  a.download = name; a.click();
++  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
++}
++$('#md').onclick = () => {
++  const n = cur();
++  download((heading(n).replace(/[\\/:*?"<>|]+/g, '-') || 'note') + '.md', (n.title ? `# ${n.title}\n\n` : '') + n.body, 'text/markdown');
++};
++$('#export').onclick = () => { persist(); download(`notes-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(notes, null, 2), 'application/json'); };
++$('#import').onclick = () => $('#file').click();
++$('#file').onchange = async e => {
++  const f = e.target.files[0]; e.target.value = '';
++  if (!f) return;
++  try {
++    const data = JSON.parse(await f.text());
++    if (!Array.isArray(data)) throw 0;
++    let added = 0;
++    for (const r of data) {
++      if (!r || typeof r !== 'object') continue;
++      const t = Date.now();
++      const n = {
++        id: String(r.id || uid()), title: String(r.title || ''), body: String(r.body || ''),
++        tags: Array.isArray(r.tags) ? r.tags.map(x => String(x).toLowerCase()) : [],
++        pinned: !!r.pinned, archived: !!r.archived, trashed: !!r.trashed, trashedAt: r.trashedAt || (r.trashed ? t : 0),
++        created: +r.created || t, updated: +r.updated || t,
++      };
++      const old = notes.find(x => x.id === n.id);
++      if (!old) { notes.push(n); added++; }
++      else if (n.updated > old.updated) Object.assign(old, n);
++    }
++    persist(); renderEditor(); renderList();
++    toast(`Imported ${added} new note${added === 1 ? '' : 's'}`);
++  } catch { toast('Not a valid notes export file'); }
++};
++
++function applyTheme() {
++  document.documentElement.dataset.theme = prefs.theme;
++  $('#theme').textContent = { auto: '◐ Auto', light: '☀ Light', dark: '☾ Dark' }[prefs.theme];
++}
++$('#theme').onclick = () => {
++  prefs.theme = { auto: 'light', light: 'dark', dark: 'auto' }[prefs.theme];
++  savePrefs(); applyTheme();
++};
++
++document.addEventListener('keydown', e => {
++  const mod = e.ctrlKey || e.metaKey;
++  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); $('#q').focus(); $('#q').select(); }
++  else if (mod && e.altKey && e.code === 'KeyN') { e.preventDefault(); newNote(); }
++  else if (mod && e.key.toLowerCase() === 'e' && cur()) { e.preventDefault(); showPreview(!preview); }
++  else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); persist(); toast('Saved'); }
++  else if (e.key === 'Escape' && document.activeElement === $('#q')) { $('#q').value = q = ''; renderList(); $('#q').blur(); }
++});
++// keep other tabs in sync
++addEventListener('storage', e => {
++  if (e.key !== KEY) return;
++  notes = load(KEY, []);
++  if (curId && !cur()) curId = null;
++  const typing = document.activeElement && ['title', 'body', 'tagin'].includes(document.activeElement.id);
++  if (!typing) renderEditor();
++  renderList();
++});
++addEventListener('beforeunload', () => { dropIfBlank(); persist(); });
++
++$('#sort').value = prefs.sort;
++applyTheme();
++if (!notes.length) {
++  const t = Date.now();
++  notes.push({
++    id: uid(), title: 'Welcome', tags: ['help'], pinned: true, archived: false, trashed: false, created: t, updated: t,
++    body: '# Welcome\n\nNotes save automatically in this browser.\n\n- **Search** with Ctrl/⌘ K\n- Add `tags` above the text\n- Toggle **Preview** with Ctrl/⌘ E for Markdown\n- [ ] Tick tasks in preview\n- [x] Export regularly: browser storage can be cleared\n',
++  });
++  persist();
++}
++renderEditor();
++renderList();
++})();
+diff --git a/notes/index.html b/notes/index.html
+new file mode 100644
+index 0000000..94e7459
+--- /dev/null
++++ b/notes/index.html
+@@ -0,0 +1,52 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Notes</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<aside id="side">
++  <div class="top">
++    <input id="q" type="search" placeholder="Search  (Ctrl/⌘ K)" aria-label="Search notes">
++    <button id="new" title="New note (Ctrl/⌘ Alt N)">+ New</button>
++  </div>
++  <nav id="views"></nav>
++  <div id="tags"></div>
++  <div class="bar">
++    <select id="sort" aria-label="Sort">
++      <option value="updated">Last edited</option>
++      <option value="created">Created</option>
++      <option value="title">Title</option>
++    </select>
++    <button id="theme" title="Theme"></button>
++    <button id="export" title="Export all notes as JSON">Export</button>
++    <button id="import" title="Import JSON">Import</button>
++    <input id="file" type="file" accept=".json,application/json" hidden>
++  </div>
++  <ul id="list"></ul>
++</aside>
++<main id="main">
++  <div id="empty">Select a note or press <b>+ New</b></div>
++  <section id="editor" hidden>
++    <div class="tools">
++      <button id="back" title="Back to list">←</button>
++      <button id="pin" title="Pin">Pin</button>
++      <button id="arch" title="Archive">Archive</button>
++      <button id="prev" title="Toggle preview (Ctrl/⌘ E)">Preview</button>
++      <button id="md" title="Download as Markdown">.md</button>
++      <button id="del" class="danger">Trash</button>
++      <button id="restore" hidden>Restore</button>
++    </div>
++    <input id="title" placeholder="Title" aria-label="Title">
++    <input id="tagin" placeholder="tags, comma separated" aria-label="Tags">
++    <textarea id="body" placeholder="Write something… (Markdown supported)" aria-label="Note body"></textarea>
++    <div id="preview" hidden></div>
++    <div class="meta" id="meta"></div>
++  </section>
++</main>
++<div id="toast" hidden></div>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/notes/style.css b/notes/style.css
+new file mode 100644
+index 0000000..93a76a0
+--- /dev/null
++++ b/notes/style.css
+@@ -0,0 +1,60 @@
++:root{--bg:#fff;--bg2:#f5f5f7;--fg:#1d1d1f;--mute:#6e6e73;--line:#e2e2e6;--acc:#2f6fed;--sel:#e6eefe;--danger:#d93025}
++:root[data-theme=dark]{--bg:#1b1b1d;--bg2:#242427;--fg:#ececee;--mute:#9a9aa1;--line:#333337;--acc:#6b9bff;--sel:#2b3650;--danger:#ff6b60}
++@media(prefers-color-scheme:dark){:root[data-theme=auto]{--bg:#1b1b1d;--bg2:#242427;--fg:#ececee;--mute:#9a9aa1;--line:#333337;--acc:#6b9bff;--sel:#2b3650;--danger:#ff6b60}}
++*{box-sizing:border-box}
++html,body{height:100%;margin:0}
++body{display:grid;grid-template-columns:340px 1fr;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--fg)}
++button,input,select,textarea{font:inherit;color:inherit}
++button,select{background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
++button:hover{border-color:var(--acc)}
++button.on{background:var(--sel);border-color:var(--acc)}
++button.danger{color:var(--danger)}
++input,textarea{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
++:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
++#side{display:flex;flex-direction:column;min-height:0;background:var(--bg2);border-right:1px solid var(--line)}
++.top{display:flex;gap:6px;padding:10px}
++.top input{flex:1;min-width:0}
++#new{background:var(--acc);border-color:var(--acc);color:#fff}
++#views{display:flex;gap:4px;padding:0 10px 6px;flex-wrap:wrap}
++#views button{font-size:13px;padding:2px 8px}
++#tags{display:flex;gap:4px;padding:0 10px 6px;flex-wrap:wrap}
++#tags button{font-size:12px;padding:0 8px;border-radius:99px}
++.bar{display:flex;gap:4px;padding:4px 10px 8px;border-bottom:1px solid var(--line)}
++.bar select{flex:1;min-width:0}
++.bar button{font-size:13px;padding:4px 8px}
++#list{list-style:none;margin:0;padding:0;overflow:auto;flex:1}
++#list li{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
++#list li:hover{background:var(--sel)}
++#list li.sel{background:var(--sel);box-shadow:inset 3px 0 var(--acc)}
++#list b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++#list small{color:var(--mute);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++#list .none{color:var(--mute);cursor:default;text-align:center;padding:30px}
++#main{min-width:0;min-height:0;display:flex}
++#empty{margin:auto;color:var(--mute)}
++#editor{flex:1;display:flex;flex-direction:column;padding:14px 22px;gap:8px;min-height:0;max-width:900px;margin:0 auto;width:100%}
++#editor[hidden],#empty[hidden],[hidden]{display:none!important}
++.tools{display:flex;gap:6px;flex-wrap:wrap}
++#back{display:none}
++#title{font-size:22px;font-weight:600;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:6px 0}
++#tagin{border:0;padding:2px 0;color:var(--mute);font-size:13px}
++#body{flex:1;resize:none;border:0;padding:6px 0;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;min-height:0}
++#body:focus,#title:focus,#tagin:focus{outline:0}
++#preview{flex:1;overflow:auto;padding:4px 0}
++#preview pre{background:var(--bg2);padding:10px;border-radius:6px;overflow:auto}
++#preview code{background:var(--bg2);padding:1px 4px;border-radius:4px}
++#preview pre code{padding:0}
++#preview blockquote{margin:0;padding-left:12px;border-left:3px solid var(--line);color:var(--mute)}
++#preview a{color:var(--acc)}
++#preview hr{border:0;border-top:1px solid var(--line)}
++#preview li.task{list-style:none;margin-left:-20px}
++.meta{color:var(--mute);font-size:12px;display:flex;justify-content:space-between}
++#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;box-shadow:0 4px 16px #0004;z-index:9}
++#toast button{margin-left:10px;background:transparent;color:inherit;border-color:currentColor;padding:0 8px}
++@media(max-width:720px){
++  body{grid-template-columns:1fr}
++  #main{display:none}
++  body.editing #side{display:none}
++  body.editing #main{display:flex}
++  #back{display:inline-block}
++  #editor{padding:10px 14px}
++}

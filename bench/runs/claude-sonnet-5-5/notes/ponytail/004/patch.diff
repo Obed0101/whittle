@@ -1,0 +1,358 @@
+diff --git a/notes/app.js b/notes/app.js
+new file mode 100644
+index 0000000..e5922f0
+--- /dev/null
++++ b/notes/app.js
+@@ -0,0 +1,236 @@
++'use strict';
++const $ = id => document.getElementById(id);
++const KEY = 'notes.v1', TRASH_DAYS = 30, DAY = 864e5;
++const esc = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
++
++let notes = [], cur = null, view = 'notes', tag = null, q = '', preview = false, timer = null;
++
++// ---- storage ----
++function load() {
++  try { const a = JSON.parse(localStorage.getItem(KEY) || '[]'); notes = Array.isArray(a) ? a.filter(valid) : []; }
++  catch { notes = []; }
++  const cut = Date.now() - TRASH_DAYS * DAY;
++  notes = notes.filter(n => !n.deleted || n.deleted > cut);
++}
++function valid(n) { return n && typeof n.id === 'string' && typeof n.updated === 'number'; }
++function save() {
++  clearTimeout(timer); timer = null;
++  try { localStorage.setItem(KEY, JSON.stringify(notes)); status('Saved'); }
++  catch { status('Save failed (storage full or blocked) — use Export!', true); }
++}
++function queueSave() { status('Saving…'); clearTimeout(timer); timer = setTimeout(save, 300); }
++function status(t, err) { const s = $('status'); s.textContent = t; s.className = err ? 'err' : ''; }
++const get = id => notes.find(n => n.id === id);
++
++// ---- list ----
++const isEmpty = n => !n.title.trim() && !n.body.trim() && !n.tags.length;
++function visible() {
++  const w = q.toLowerCase().split(/\s+/).filter(Boolean);
++  return notes.filter(n => !!n.deleted === (view === 'trash'))
++    .filter(n => !tag || n.tags.includes(tag))
++    .filter(n => { const h = (n.title + '\n' + n.body + '\n' + n.tags.join(' ')).toLowerCase(); return w.every(x => h.includes(x)); })
++    .sort((a, b) => (b.pinned - a.pinned) || b.updated - a.updated);
++}
++function fmt(t) {
++  const d = new Date(t), now = new Date();
++  return d.toDateString() === now.toDateString()
++    ? d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})
++    : d.toLocaleDateString([], {month: 'short', day: 'numeric', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric'});
++}
++function renderList() {
++  const counts = {};
++  notes.filter(n => !!n.deleted === (view === 'trash')).forEach(n => n.tags.forEach(t => counts[t] = (counts[t] || 0) + 1));
++  if (tag && !counts[tag]) tag = null;
++  $('tags').innerHTML = Object.keys(counts).sort().map(t =>
++    `<button data-tag="${esc(t)}" class="${t === tag ? 'on' : ''}">#${esc(t)} ${counts[t]}</button>`).join('');
++  const l = visible();
++  $('list').innerHTML = l.length ? l.map(n => {
++    const snip = n.body.split('\n').find(x => x.trim()) || '';
++    return `<li data-id="${n.id}" class="${n.id === cur ? 'on' : ''}"><b>${n.pinned ? '★ ' : ''}${esc(n.title.trim() || 'Untitled')}</b><small>${fmt(n.updated)} · ${esc(snip.slice(0, 80))}</small></li>`;
++  }).join('') : `<li class="none">${q || tag ? 'No matches' : view === 'trash' ? 'Trash is empty' : 'No notes yet'}</li>`;
++  document.querySelectorAll('#views button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
++  $('views').children[1].textContent = 'Trash' + (notes.some(n => n.deleted) ? ` (${notes.filter(n => n.deleted).length})` : '');
++}
++
++// ---- editor ----
++function select(id) {
++  const prev = get(cur);
++  if (prev && prev.id !== id && isEmpty(prev) && !prev.deleted) { notes = notes.filter(n => n !== prev); save(); }
++  cur = id; preview = false;
++  const n = get(id);
++  $('editor').hidden = !n; $('empty').hidden = !!n;
++  document.body.classList.toggle('editing', !!n);
++  if (n) {
++    $('title').value = n.title; $('body').value = n.body; $('noteTags').value = n.tags.join(', ');
++    const t = !!n.deleted;
++    ['title', 'body', 'noteTags'].forEach(i => $(i).readOnly = t);
++    $('del').hidden = t; $('restore').hidden = !t; $('pin').hidden = t;
++    $('del').textContent = 'Delete';
++    $('restore').title = 'Restore from trash';
++    showMode(); updateBar(n);
++  }
++  renderList();
++}
++function showMode() {
++  $('body').hidden = preview; $('view').hidden = !preview;
++  $('preview').textContent = preview ? 'Edit' : 'Preview';
++  if (preview) $('view').innerHTML = md(get(cur).body);
++}
++function updateBar(n) {
++  $('pin').textContent = n.pinned ? '★' : '☆';
++  const words = (n.body.match(/\S+/g) || []).length;
++  $('meta').textContent = `${words} words · ${n.body.length} chars · edited ${new Date(n.updated).toLocaleString()}` +
++    (n.deleted ? ` · in trash, auto-deleted ${new Date(n.deleted + TRASH_DAYS * DAY).toLocaleDateString()}` : '');
++}
++function touch(n) { n.updated = Date.now(); updateBar(n); renderList(); queueSave(); }
++function newNote() {
++  const e = notes.find(n => !n.deleted && isEmpty(n));
++  if (e) { select(e.id); $('title').focus(); return; }
++  const n = {id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: '', body: '', tags: [], pinned: false, created: Date.now(), updated: Date.now(), deleted: null};
++  notes.push(n);
++  view = 'notes'; q = ''; tag = null; $('search').value = '';
++  select(n.id); $('title').focus(); save();
++}
++const parseTags = s => [...new Set(s.split(/[,\n]/).map(t => t.trim().replace(/^#/, '').toLowerCase()).filter(Boolean))];
++
++$('title').oninput = () => { const n = get(cur); n.title = $('title').value; touch(n); };
++$('body').oninput = () => { const n = get(cur); n.body = $('body').value; touch(n); };
++$('noteTags').oninput = () => { const n = get(cur); n.tags = parseTags($('noteTags').value); touch(n); };
++$('noteTags').onblur = () => { const n = get(cur); if (n) $('noteTags').value = n.tags.join(', '); };
++$('pin').onclick = () => { const n = get(cur); n.pinned = !n.pinned; touch(n); };
++$('preview').onclick = () => { preview = !preview; showMode(); };
++$('back').onclick = () => select(null);
++$('del').onclick = () => {
++  const n = get(cur);
++  if (isEmpty(n)) notes = notes.filter(x => x !== n); else n.deleted = Date.now();
++  save(); select(null);
++};
++$('restore').onclick = () => { const n = get(cur); n.deleted = null; n.updated = Date.now(); save(); view = 'notes'; select(n.id); };
++$('md').onclick = () => { const n = get(cur); download((n.title.trim() || 'note').replace(/[\\/:*?"<>|]+/g, '-') + '.md', (n.title ? '# ' + n.title + '\n\n' : '') + n.body, 'text/markdown'); };
++
++// ---- sidebar ----
++$('new').onclick = newNote;
++$('search').oninput = e => { q = e.target.value; renderList(); };
++$('list').onclick = e => { const li = e.target.closest('li[data-id]'); if (li) select(li.dataset.id); };
++$('tags').onclick = e => { const b = e.target.closest('button'); if (b) { tag = tag === b.dataset.tag ? null : b.dataset.tag; renderList(); } };
++$('views').onclick = e => {
++  const b = e.target.closest('button'); if (!b) return;
++  view = b.dataset.view; tag = null;
++  select(null);
++};
++$('views').ondblclick = e => {
++  if (view === 'trash' && notes.some(n => n.deleted) && confirm('Permanently delete everything in Trash?')) {
++    notes = notes.filter(n => !n.deleted); save(); select(null);
++  }
++};
++$('views').children[1].title = 'Double-click to empty trash';
++
++// ---- export / import / theme ----
++function download(name, text, type) {
++  const a = document.createElement('a');
++  a.href = URL.createObjectURL(new Blob([text], {type}));
++  a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
++}
++$('export').onclick = () => download(`notes-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(notes, null, 2), 'application/json');
++$('import').onclick = () => $('file').click();
++$('file').onchange = async e => {
++  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
++  try {
++    const a = JSON.parse(await f.text());
++    if (!Array.isArray(a)) throw 0;
++    let c = 0;
++    for (const x of a.filter(valid)) {
++      const n = {id: x.id, title: String(x.title || ''), body: String(x.body || ''), tags: Array.isArray(x.tags) ? x.tags.map(String) : [],
++        pinned: !!x.pinned, created: +x.created || x.updated, updated: x.updated, deleted: x.deleted ? +x.deleted : null};
++      const o = get(n.id);
++      if (!o) { notes.push(n); c++; } else if (o.updated < n.updated) { Object.assign(o, n); c++; }
++    }
++    save(); select(cur && get(cur) ? cur : null); status(`Imported ${c} note(s)`);
++  } catch { alert('That file is not a valid notes export.'); }
++};
++function setTheme(t) { document.documentElement.dataset.theme = t; try { localStorage.setItem('notes.theme', t); } catch {} }
++$('theme').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
++
++// ---- markdown ----
++function inline(s) {
++  const codes = [];
++  s = esc(s).replace(/`([^`]+)`/g, (_, c) => '\0' + (codes.push(c) - 1) + '\0');
++  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
++    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>')
++    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
++    .replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?!\w)/g, '$1<em>$2</em>')
++    .replace(/~~(.+?)~~/g, '<del>$1</del>');
++  return s.replace(/\0(\d+)\0/g, (_, i) => '<code>' + codes[i] + '</code>');
++}
++const LI = /^(\s*)([-*+]|\d+\.)\s+(.*)/;
++const block = l => /^(```|#{1,6}\s|>|\s*([-*+]|\d+\.)\s|(-{3,}|\*{3,})\s*$)/.test(l);
++function md(src) {
++  const L = src.split('\n'), out = [];
++  for (let i = 0; i < L.length;) {
++    const l = L[i];
++    if (/^```/.test(l)) {
++      const b = []; i++;
++      while (i < L.length && !/^```/.test(L[i])) b.push(L[i++]);
++      i++; out.push('<pre><code>' + esc(b.join('\n')) + '</code></pre>'); continue;
++    }
++    let m;
++    if ((m = l.match(/^(#{1,6})\s+(.*)/))) { out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`); i++; continue; }
++    if (/^(-{3,}|\*{3,})\s*$/.test(l)) { out.push('<hr>'); i++; continue; }
++    if (/^>/.test(l)) {
++      const b = []; while (i < L.length && /^>/.test(L[i])) b.push(inline(L[i++].replace(/^>\s?/, '')));
++      out.push('<blockquote>' + b.join('<br>') + '</blockquote>'); continue;
++    }
++    if (LI.test(l)) {
++      const ord = /\d/.test(l.match(LI)[2]), items = [];
++      while (i < L.length && LI.test(L[i])) {
++        const [, ind, , t] = L[i].match(LI), k = t.match(/^\[( |x)\]\s+(.*)/i);
++        const pad = `style="margin-left:${Math.min(ind.replace(/\t/g, '  ').length, 12) * 8}px"`;
++        items.push(k
++          ? `<li class="task" ${pad}><input type="checkbox" data-line="${i}"${k[1] !== ' ' ? ' checked' : ''}> ${inline(k[2])}</li>`
++          : `<li ${pad}>${inline(t)}</li>`);
++        i++;
++      }
++      out.push(`<${ord ? 'ol' : 'ul'}>${items.join('')}</${ord ? 'ol' : 'ul'}>`); continue;
++    }
++    if (!l.trim()) { i++; continue; }
++    const b = []; while (i < L.length && L[i].trim() && !(b.length && block(L[i]))) b.push(inline(L[i++]));
++    out.push('<p>' + b.join('<br>') + '</p>');
++  }
++  return out.join('\n') || '<p style="color:var(--mute)">Nothing to preview.</p>';
++}
++$('view').onclick = e => { // toggle task checkboxes from the preview
++  const c = e.target; if (c.type !== 'checkbox') return;
++  const n = get(cur); if (n.deleted) { e.preventDefault(); return; }
++  const L = n.body.split('\n'), i = +c.dataset.line;
++  L[i] = L[i].replace(/\[( |x)\]/i, c.checked ? '[x]' : '[ ]');
++  n.body = L.join('\n'); $('body').value = n.body; touch(n);
++};
++
++// ---- keys, lifecycle ----
++document.addEventListener('keydown', e => {
++  const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
++  if (mod && k === 'n') { e.preventDefault(); newNote(); }
++  else if (mod && k === 'k') { e.preventDefault(); select(null); $('search').focus(); $('search').select(); }
++  else if (mod && k === 'e' && get(cur)) { e.preventDefault(); $('preview').click(); }
++  else if (e.key === 'Escape' && document.activeElement === $('search')) { $('search').value = ''; q = ''; renderList(); }
++});
++$('body').addEventListener('keydown', e => { // Tab inserts spaces instead of leaving the field
++  if (e.key !== 'Tab') return;
++  e.preventDefault(); document.execCommand('insertText', false, '  ');
++});
++addEventListener('beforeunload', () => { if (timer) save(); });
++document.addEventListener('visibilitychange', () => { if (document.hidden && timer) save(); });
++addEventListener('storage', e => { // another tab changed the data
++  if (e.key !== KEY || timer) return;
++  load(); if (cur && !get(cur)) cur = null;
++  const n = get(cur);
++  if (n && document.activeElement !== $('body') && document.activeElement !== $('title')) select(cur); else renderList();
++});
++
++// ---- init ----
++let t; try { t = localStorage.getItem('notes.theme'); } catch {}
++setTheme(t || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
++load();
++renderList();
++if (!notes.length) { notes.push({id: 'welcome', title: 'Welcome', pinned: true, tags: ['help'], created: Date.now(), updated: Date.now(), deleted: null,
++  body: '# Welcome\n\nYour notes are saved automatically in this browser.\n\n- [ ] Try a **checklist** (toggle it in Preview)\n- Search with Ctrl/⌘ K, new note with Ctrl/⌘ N\n- Add tags above, pin notes with the star\n- Deleted notes stay in Trash for 30 days (double-click the Trash tab to empty it)\n- Use Export regularly to keep a backup\n'}); save(); renderList(); }
+diff --git a/notes/index.html b/notes/index.html
+new file mode 100644
+index 0000000..ec61104
+--- /dev/null
++++ b/notes/index.html
+@@ -0,0 +1,49 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Notes</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<aside id="side">
++  <header>
++    <input id="search" type="search" placeholder="Search (Ctrl/⌘ K)" aria-label="Search notes">
++    <button id="new" title="New note (Ctrl/⌘ N)">+ New</button>
++  </header>
++  <nav id="views">
++    <button data-view="notes" class="on">Notes</button>
++    <button data-view="trash">Trash</button>
++  </nav>
++  <div id="tags"></div>
++  <ul id="list"></ul>
++  <footer>
++    <button id="export" title="Download all notes as JSON">Export</button>
++    <button id="import" title="Import notes from JSON">Import</button>
++    <button id="theme" title="Toggle theme">◐</button>
++    <input id="file" type="file" accept=".json,application/json" hidden>
++    <span id="status"></span>
++  </footer>
++</aside>
++<main id="main">
++  <div id="empty">Select a note or press <kbd>+ New</kbd></div>
++  <section id="editor" hidden>
++    <div class="bar">
++      <button id="back" title="Back to list">←</button>
++      <input id="title" placeholder="Title" aria-label="Title">
++      <button id="pin" title="Pin">☆</button>
++      <button id="preview" title="Toggle preview (Ctrl/⌘ E)">Preview</button>
++      <button id="md" title="Download as Markdown">.md</button>
++      <button id="del" title="Move to trash">Delete</button>
++      <button id="restore" title="Restore" hidden>Restore</button>
++    </div>
++    <input id="noteTags" placeholder="tags, separated, by commas" aria-label="Tags">
++    <textarea id="body" placeholder="Write something… (Markdown supported)" aria-label="Note body"></textarea>
++    <article id="view" hidden></article>
++    <div class="meta" id="meta"></div>
++  </section>
++</main>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/notes/style.css b/notes/style.css
+new file mode 100644
+index 0000000..3dff61c
+--- /dev/null
++++ b/notes/style.css
+@@ -0,0 +1,55 @@
++:root{--bg:#fff;--panel:#f6f6f4;--fg:#1d1d1f;--mute:#777;--line:#e2e2de;--acc:#2f6fed;--sel:#e4ecfd;--code:#efefec}
++[data-theme=dark]{--bg:#18181a;--panel:#202023;--fg:#e8e8ea;--mute:#8d8d95;--line:#333338;--acc:#6b9bff;--sel:#2a3552;--code:#2a2a2e}
++*{box-sizing:border-box}
++html,body{height:100%;margin:0}
++body{display:flex;font:15px/1.5 system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--fg)}
++button,input,textarea{font:inherit;color:inherit}
++button{background:none;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
++button:hover{background:var(--sel)}
++input,textarea{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
++input:focus,textarea:focus,button:focus-visible{outline:2px solid var(--acc);outline-offset:-1px}
++#side{width:320px;min-width:260px;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column}
++#side header{display:flex;gap:6px;padding:10px}
++#search{flex:1;min-width:0}
++#new{background:var(--acc);color:#fff;border-color:var(--acc)}
++#views{display:flex;gap:6px;padding:0 10px 8px}
++#views button{flex:1}
++#views .on{background:var(--sel);border-color:var(--acc)}
++#tags{display:flex;flex-wrap:wrap;gap:4px;padding:0 10px 8px}
++#tags button{font-size:12px;padding:1px 8px;border-radius:99px}
++#tags .on{background:var(--acc);color:#fff;border-color:var(--acc)}
++#list{flex:1;overflow:auto;list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
++#list li{padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer}
++#list li.on{background:var(--sel)}
++#list b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++#list small{display:block;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++#list .none{color:var(--mute);cursor:default;text-align:center;padding:24px}
++#side footer{display:flex;gap:6px;align-items:center;padding:8px 10px;border-top:1px solid var(--line)}
++#status{margin-left:auto;font-size:12px;color:var(--mute)}
++#status.err{color:#d33;font-weight:600}
++#main{flex:1;min-width:0;display:flex}
++#empty{margin:auto;color:var(--mute)}
++#editor{flex:1;display:flex;flex-direction:column;gap:8px;padding:14px 20px;min-width:0}
++.bar{display:flex;gap:6px;align-items:center}
++#back{display:none}
++#title{flex:1;min-width:0;font-size:20px;font-weight:600;border:0;padding:4px 0;background:none}
++#noteTags{font-size:13px}
++#body{flex:1;resize:none;line-height:1.6;font-family:ui-monospace,Menlo,monospace;font-size:14px}
++#view{flex:1;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px 16px}
++#view pre{background:var(--code);padding:10px;border-radius:6px;overflow:auto}
++#view code{background:var(--code);padding:1px 4px;border-radius:4px}
++#view pre code{padding:0;background:none}
++#view blockquote{margin:8px 0;padding:0 12px;border-left:3px solid var(--line);color:var(--mute)}
++#view a{color:var(--acc)}
++#view hr{border:0;border-top:1px solid var(--line)}
++#view li{list-style-position:inside}
++#view li.task{list-style:none}
++.meta{font-size:12px;color:var(--mute)}
++kbd{border:1px solid var(--line);border-radius:4px;padding:0 4px}
++@media(max-width:720px){
++  #side{width:100%}
++  #main{display:none;width:100%}
++  body.editing #side{display:none}
++  body.editing #main{display:flex}
++  #back{display:inline-block}
++}

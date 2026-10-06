@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Runs: keep scores and patches; drop development runs, bulky transcripts and the fetched-skill cache
+bench/runs/dev/
+bench/runs/pi-*/**/transcript.jsonl
+bench/.arms/
+
+# Local agent context and secrets never belong here
+.agents/
+.claude/
+.pi/
+.env
+.env.*
+*.kdbx
+.vercel

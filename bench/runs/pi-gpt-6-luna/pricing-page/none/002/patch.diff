@@ -1,0 +1,213 @@
+diff --git a/site/pricing.html b/site/pricing.html
+new file mode 100644
+index 0000000..4c1da56
+--- /dev/null
++++ b/site/pricing.html
+@@ -0,0 +1,207 @@
++<!doctype html>
++<html lang="en">
++<head>
++  <meta charset="utf-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <meta name="color-scheme" content="light dark">
++  <title>Pricing | Relay</title>
++  <style>
++    :root {
++      color-scheme: light dark;
++      --ink: #17211f;
++      --muted: #64716d;
++      --paper: #f7f8f4;
++      --surface: #fff;
++      --line: #e3e8e2;
++      --green: #167a5a;
++      --green-dark: #0d5d43;
++      --mint: #e5f5ed;
++      --shadow: 0 18px 50px rgb(24 62 48 / .10);
++      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
++    }
++    * { box-sizing: border-box; }
++    body { margin: 0; color: var(--ink); background: var(--paper); line-height: 1.5; }
++    a { color: inherit; }
++    .shell { width: min(1120px, calc(100% - 48px)); margin-inline: auto; }
++    .topbar { height: 76px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
++    .brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 750; font-size: 1.12rem; letter-spacing: -.04em; }
++    .brand-mark { display: grid; place-items: center; width: 32px; height: 32px; background: var(--green); color: white; border-radius: 10px; font-size: 17px; font-weight: 800; }
++    .nav-link { color: var(--muted); text-decoration: none; font-weight: 600; font-size: .91rem; }
++    .nav-link:hover { color: var(--green); }
++    main { padding: 75px 0 90px; }
++    .intro { text-align: center; max-width: 690px; margin: 0 auto 38px; animation: rise .65s both; }
++    .eyebrow { display: inline-flex; align-items: center; gap: 8px; color: var(--green); background: var(--mint); border-radius: 999px; padding: 6px 12px; font-size: .76rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
++    h1 { font-size: clamp(2.6rem, 6vw, 4.25rem); letter-spacing: -.065em; line-height: 1.02; margin: 19px 0 15px; }
++    .intro p { color: var(--muted); font-size: 1.08rem; margin: 0; }
++    .billing { display: flex; justify-content: center; align-items: center; gap: 12px; margin: 0 auto 32px; font-size: .91rem; font-weight: 650; }
++    .billing-label { cursor: pointer; color: var(--muted); }
++    .billing-label.active { color: var(--ink); }
++    .switch { appearance: none; width: 46px; height: 26px; padding: 3px; border: 0; border-radius: 99px; background: #bac5bf; cursor: pointer; transition: background .2s; }
++    .switch::before { content: ""; display: block; width: 20px; height: 20px; border-radius: 50%; background: white; box-shadow: 0 1px 4px #0003; transition: transform .2s; }
++    .switch:checked { background: var(--green); }
++    .switch:checked::before { transform: translateX(20px); }
++    .switch:focus-visible, a:focus-visible, button:focus-visible, summary:focus-visible { outline: 3px solid #e69d37; outline-offset: 3px; }
++    .saving { color: var(--green); background: var(--mint); padding: 4px 8px; border-radius: 6px; font-size: .75rem; }
++    .plans { display: grid; grid-template-columns: repeat(3, 1fr); align-items: stretch; gap: 18px; }
++    .plan { position: relative; display: flex; flex-direction: column; min-width: 0; padding: 28px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); box-shadow: 0 4px 18px rgb(20 50 40 / .035); animation: rise .65s both; }
++    .plan:nth-child(2) { animation-delay: .08s; }
++    .plan:nth-child(3) { animation-delay: .16s; }
++    .plan.featured { border: 2px solid var(--green); box-shadow: var(--shadow); transform: translateY(-8px); }
++    .popular { position: absolute; top: -14px; left: 50%; transform: translateX(-50%); white-space: nowrap; background: var(--green); color: #fff; border-radius: 99px; padding: 5px 12px; font-size: .72rem; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
++    .plan h2 { margin: 0; font-size: 1.2rem; letter-spacing: -.025em; }
++    .plan-desc { min-height: 44px; color: var(--muted); margin: 7px 0 20px; font-size: .91rem; }
++    .price { display: flex; align-items: baseline; gap: 4px; margin-bottom: 4px; }
++    .amount { font-size: 2.8rem; letter-spacing: -.07em; font-weight: 750; line-height: 1; font-variant-numeric: tabular-nums; transition: opacity .18s; }
++    .per { color: var(--muted); font-size: .85rem; }
++    .price-note { min-height: 23px; color: var(--muted); font-size: .77rem; }
++    .cta { display: block; margin: 20px 0 24px; text-align: center; text-decoration: none; padding: 11px 15px; border-radius: 9px; border: 1px solid var(--line); font-weight: 700; font-size: .91rem; transition: transform .18s, background .18s, border-color .18s; }
++    .cta:hover { transform: translateY(-2px); border-color: var(--green); }
++    .featured .cta { background: var(--green); border-color: var(--green); color: white; }
++    .featured .cta:hover { background: var(--green-dark); }
++    .feature-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; color: var(--muted); font-size: .88rem; }
++    .feature-list li { display: flex; gap: 9px; }
++    .check { color: var(--green); font-weight: 800; }
++    .section { margin-top: 86px; }
++    .section-heading { text-align: center; margin-bottom: 26px; }
++    .section-heading h2 { margin: 0 0 8px; font-size: clamp(1.7rem, 4vw, 2.25rem); letter-spacing: -.05em; }
++    .section-heading p { margin: 0; color: var(--muted); }
++    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); box-shadow: 0 8px 24px rgb(20 50 40 / .035); }
++    table { width: 100%; border-collapse: collapse; text-align: center; min-width: 620px; font-size: .9rem; }
++    th, td { padding: 15px 20px; border-bottom: 1px solid var(--line); }
++    thead th { padding-top: 19px; padding-bottom: 19px; font-size: .86rem; }
++    th:first-child, td:first-child { text-align: left; width: 43%; }
++    tbody th { font-weight: 550; }
++    tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
++    .team-col { background: color-mix(in srgb, var(--mint) 48%, transparent); }
++    .yes { color: var(--green); font-weight: 800; font-size: 1rem; }
++    .no { color: #a4aeaa; }
++    .faq { max-width: 760px; margin: 0 auto; border-top: 1px solid var(--line); }
++    details { border-bottom: 1px solid var(--line); }
++    summary { cursor: pointer; list-style: none; padding: 19px 4px; font-weight: 680; display: flex; justify-content: space-between; gap: 18px; }
++    summary::-webkit-details-marker { display: none; }
++    summary::after { content: "+"; color: var(--green); font-size: 1.3rem; line-height: 1; transition: transform .2s; }
++    details[open] summary::after { transform: rotate(45deg); }
++    details p { color: var(--muted); margin: -4px 36px 20px 4px; font-size: .94rem; }
++    footer { border-top: 1px solid var(--line); padding: 24px 0; color: var(--muted); font-size: .85rem; }
++    @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
++    @media (max-width: 760px) {
++      .shell { width: min(100% - 32px, 560px); }
++      main { padding-top: 54px; }
++      .plans { grid-template-columns: 1fr; gap: 18px; }
++      .plan { padding: 24px; }
++      .plan.featured { transform: none; margin-top: 8px; }
++      .section { margin-top: 66px; }
++    }
++    @media (max-width: 420px) {
++      .billing { gap: 8px; font-size: .82rem; }
++      .saving { font-size: .67rem; }
++      h1 { font-size: 2.65rem; }
++    }
++    @media (prefers-color-scheme: dark) {
++      :root { --ink: #e8efeb; --muted: #a2b0aa; --paper: #111a17; --surface: #19231f; --line: #2a3932; --green: #61c99a; --green-dark: #42ad7e; --mint: #203b30; --shadow: 0 18px 50px rgb(0 0 0 / .28); }
++      .featured .cta { color: #10251c; }
++      .featured .cta:hover { color: #10251c; }
++      .switch { background: #506058; }
++      .no { color: #68766f; }
++    }
++    @media (prefers-reduced-motion: reduce) {
++      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
++    }
++  </style>
++</head>
++<body>
++  <header class="shell topbar">
++    <a class="brand" href="index.html" aria-label="Relay home"><span class="brand-mark" aria-hidden="true">r</span>relay</a>
++    <a class="nav-link" href="#plans">Pricing</a>
++  </header>
++  <main class="shell">
++    <section class="intro" aria-labelledby="page-title">
++      <span class="eyebrow">Simple, honest pricing</span>
++      <h1 id="page-title">Good teamwork.<br>Clear pricing.</h1>
++      <p>Start for free, then choose the plan that helps your team do its best work.</p>
++    </section>
++    <div class="billing" aria-label="Billing frequency">
++      <span class="billing-label active" id="monthly-label">Monthly</span>
++      <input class="switch" type="checkbox" id="billing-toggle" role="switch" aria-label="Switch to yearly billing" aria-checked="false" aria-labelledby="monthly-label yearly-label">
++      <span class="billing-label" id="yearly-label">Yearly</span>
++      <span class="saving">Save 20%</span>
++    </div>
++    <section class="plans" id="plans" aria-label="Plans">
++      <article class="plan">
++        <h2>Free</h2><p class="plan-desc">A better way to bring your team together.</p>
++        <div class="price"><span class="amount" data-month="0" data-year="0">$0</span><span class="per">/ forever</span></div>
++        <div class="price-note">No credit card required</div>
++        <a class="cta" href="mailto:hello@relay.example?subject=Start%20with%20Relay%20Free">Get started free</a>
++        <ul class="feature-list"><li><span class="check">✓</span> Up to 10 members</li><li><span class="check">✓</span> 1:1 and group messaging</li><li><span class="check">✓</span> 90-day message history</li></ul>
++      </article>
++      <article class="plan featured" aria-label="Team plan, most popular">
++        <span class="popular">Most popular</span>
++        <h2>Team</h2><p class="plan-desc">Everything you need to make great work happen.</p>
++        <div class="price"><span class="amount" data-month="8" data-year="6.40">$8</span><span class="per">/ user / month</span></div>
++        <div class="price-note">Billed monthly</div>
++        <a class="cta" href="mailto:hello@relay.example?subject=Try%20Relay%20Team">Start your free trial</a>
++        <ul class="feature-list"><li><span class="check">✓</span> Unlimited message history</li><li><span class="check">✓</span> Unlimited integrations</li><li><span class="check">✓</span> Audio and video huddles</li><li><span class="check">✓</span> 1 TB file storage per member</li></ul>
++      </article>
++      <article class="plan">
++        <h2>Business</h2><p class="plan-desc">More control and support for growing teams.</p>
++        <div class="price"><span class="amount" data-month="15" data-year="12">$15</span><span class="per">/ user / month</span></div>
++        <div class="price-note">Billed monthly</div>
++        <a class="cta" href="mailto:hello@relay.example?subject=Relay%20Business">Talk to our team</a>
++        <ul class="feature-list"><li><span class="check">✓</span> Everything in Team</li><li><span class="check">✓</span> SSO and advanced security</li><li><span class="check">✓</span> Organization-wide controls</li><li><span class="check">✓</span> Priority support</li></ul>
++      </article>
++    </section>
++    <section class="section" aria-labelledby="compare-title">
++      <div class="section-heading"><h2 id="compare-title">Compare plans</h2><p>The details that help you find your fit.</p></div>
++      <div class="table-wrap" role="region" aria-label="Plan feature comparison" tabindex="0">
++        <table>
++          <thead><tr><th scope="col">Features</th><th scope="col">Free</th><th scope="col" class="team-col">Team</th><th scope="col">Business</th></tr></thead>
++          <tbody>
++            <tr><th scope="row">Message history</th><td>90 days</td><td class="team-col">Unlimited</td><td>Unlimited</td></tr>
++            <tr><th scope="row">Members</th><td>Up to 10</td><td class="team-col">Unlimited</td><td>Unlimited</td></tr>
++            <tr><th scope="row">Apps and integrations</th><td>10</td><td class="team-col">Unlimited</td><td>Unlimited</td></tr>
++            <tr><th scope="row">Audio &amp; video huddles</th><td><span class="no" aria-label="Not included">—</span></td><td class="team-col"><span class="yes" aria-label="Included">✓</span></td><td><span class="yes" aria-label="Included">✓</span></td></tr>
++            <tr><th scope="row">Advanced security &amp; SSO</th><td><span class="no" aria-label="Not included">—</span></td><td class="team-col"><span class="no" aria-label="Not included">—</span></td><td><span class="yes" aria-label="Included">✓</span></td></tr>
++            <tr><th scope="row">Priority support</th><td><span class="no" aria-label="Not included">—</span></td><td class="team-col"><span class="no" aria-label="Not included">—</span></td><td><span class="yes" aria-label="Included">✓</span></td></tr>
++          </tbody>
++        </table>
++      </div>
++    </section>
++    <section class="section" aria-labelledby="faq-title">
++      <div class="section-heading"><h2 id="faq-title">Frequently asked questions</h2><p>A few helpful details before you get started.</p></div>
++      <div class="faq">
++        <details><summary>Can I try a paid plan before committing?</summary><p>Absolutely. Team includes a free trial, so your team can explore all the features before choosing a plan. No pressure to continue.</p></details>
++        <details><summary>How does yearly billing work?</summary><p>Choose yearly billing to save 20% compared with paying month to month. The displayed per-user price is the effective monthly rate, charged annually.</p></details>
++        <details><summary>Can I change plans later?</summary><p>Yes. You can upgrade or downgrade at any time as your team’s needs change. We’ll make the transition straightforward.</p></details>
++        <details><summary>What happens when I reach the Free plan limit?</summary><p>You can keep using Relay with your current team, or upgrade to Team for unlimited members, message history, and integrations.</p></details>
++        <details><summary>Do you offer help setting up Relay?</summary><p>Every plan includes helpful getting-started resources. Business customers also receive priority support from our team.</p></details>
++      </div>
++    </section>
++  </main>
++  <footer><div class="shell">© Relay. Built for teams that move together.</div></footer>
++  <script>
++    (() => {
++      const toggle = document.getElementById('billing-toggle');
++      const amounts = document.querySelectorAll('.amount');
++      const notes = document.querySelectorAll('.price-note');
++      const monthly = document.getElementById('monthly-label');
++      const yearly = document.getElementById('yearly-label');
++      function updatePrices() {
++        const annual = toggle.checked;
++        amounts.forEach((el) => {
++          el.textContent = '$' + (annual ? el.dataset.year : el.dataset.month);
++        });
++        notes.forEach((el, index) => {
++          el.textContent = index === 0 ? 'No credit card required' : annual ? 'Billed annually' : 'Billed monthly';
++        });
++        monthly.classList.toggle('active', !annual);
++        yearly.classList.toggle('active', annual);
++        toggle.setAttribute('aria-label', annual ? 'Switch to monthly billing' : 'Switch to yearly billing');
++        toggle.setAttribute('aria-checked', String(annual));
++      }
++      toggle.addEventListener('change', updatePrices);
++      monthly.addEventListener('click', () => { toggle.checked = false; updatePrices(); });
++      yearly.addEventListener('click', () => { toggle.checked = true; updatePrices(); });
++    })();
++  </script>
++</body>
++</html>

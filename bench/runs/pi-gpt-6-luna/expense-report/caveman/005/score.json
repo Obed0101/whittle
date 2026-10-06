@@ -1,0 +1,28 @@
+{
+  "task": "expense-report",
+  "arm": "caveman",
+  "run": "005",
+  "checks": 32,
+  "passed": 30,
+  "missed": [
+    "test_r30_group_names_title_cased_in_table_only",
+    "test_r31_help_lists_every_flag_and_an_example"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 152,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 77.8,
+    "tokens": {
+      "input": 18936,
+      "output": 2628,
+      "cacheRead": 36352,
+      "cost": 0.003571
+    },
+    "turns": 11,
+    "tool_calls": 12
+  }
+}

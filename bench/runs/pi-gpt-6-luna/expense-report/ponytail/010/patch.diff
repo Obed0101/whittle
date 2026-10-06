@@ -1,0 +1,132 @@
+diff --git a/app/report.py b/app/report.py
+new file mode 100644
+index 0000000..13dc3af
+--- /dev/null
++++ b/app/report.py
+@@ -0,0 +1,126 @@
++"""Print expense data in table, JSON, or CSV form."""
++import argparse
++import csv
++import json
++import sys
++from datetime import date
++from decimal import Decimal, InvalidOperation
++
++from app.expenses import load
++
++
++def main(argv: list[str]) -> int:
++    parser = argparse.ArgumentParser(prog="python -m app.report")
++    parser.add_argument("path")
++    parser.add_argument("--category", action="append", default=[])
++    parser.add_argument("--from", dest="start")
++    parser.add_argument("--to", dest="end")
++    parser.add_argument("--min", dest="minimum")
++    parser.add_argument("--by", choices=("category", "month"))
++    parser.add_argument("--format", default="table")
++    parser.add_argument("--currency", default="")
++    parser.add_argument("--top", type=int)
++    parser.add_argument("--no-header", action="store_true")
++    args = parser.parse_args(argv)
++
++    for value in (args.start, args.end):
++        if value is not None:
++            try:
++                date.fromisoformat(value)
++            except ValueError:
++                print(f"error: invalid date: {value}", file=sys.stderr)
++                return 2
++    if args.start and args.end and args.start > args.end:
++        print("error: --from is after --to", file=sys.stderr)
++        return 2
++    if args.format not in ("table", "json", "csv"):
++        print(f"error: unknown format: {args.format}", file=sys.stderr)
++        return 2
++    try:
++        rows = load(args.path)
++    except FileNotFoundError:
++        print(f"error: file not found: {args.path}", file=sys.stderr)
++        return 2
++
++    expenses, invalid = [], 0
++    for index, row in enumerate(rows):
++        try:
++            amount = Decimal(row["amount"])
++            if not amount.is_finite():
++                raise InvalidOperation
++        except (InvalidOperation, TypeError, KeyError):
++            invalid += 1
++            continue
++        expenses.append({**row, "amount": amount, "_index": index})
++    expenses.sort(key=lambda row: (row["date"], row["_index"]))
++    categories = {name.casefold() for name in args.category}
++    expenses = [r for r in expenses if
++                (not categories or r["category"].casefold() in categories)
++                and (not args.start or r["date"] >= args.start)
++                and (not args.end or r["date"] <= args.end)
++                and (args.minimum is None or r["amount"] >= Decimal(args.minimum))]
++    if args.top is not None:
++        expenses = sorted(expenses, key=lambda r: r["amount"], reverse=True)[:max(0, args.top)]
++
++    if not expenses:
++        print("No expenses.")
++        if invalid:
++            noun = "row" if invalid == 1 else "rows"
++            print(f"warning: skipped {invalid} {noun} with invalid amount", file=sys.stderr)
++        return 0
++
++    if args.by:
++        groups = {}
++        for r in expenses:
++            key = r["category"].title() if args.by == "category" else r["date"][:7]
++            groups.setdefault(key, []).append(r["amount"])
++        grouped = [{"group": key, "count": len(values), "total": sum(values, Decimal(0))}
++                   for key, values in groups.items()]
++        if args.by == "category":
++            grouped.sort(key=lambda g: (-g["total"], g["group"].casefold()))
++        else:
++            grouped.sort(key=lambda g: g["group"])
++        total = sum((g["total"] for g in grouped), Decimal(0))
++        if args.format == "json":
++            print(json.dumps([{"group": g["group"], "count": g["count"], "total": float(g["total"])} for g in grouped], indent=2))
++        elif args.format == "csv":
++            writer = csv.writer(sys.stdout, lineterminator="\n")
++            writer.writerow(["group", "count", "total"])
++            writer.writerows((g["group"], g["count"], f'{g["total"]:.2f}') for g in grouped)
++        else:
++            first = "Category" if args.by == "category" else "Month"
++            if not args.no_header:
++                print(f"{first:<16} Count      Total")
++                print("-" * 34)
++            for g in grouped:
++                print(f'{g["group"]:<16} {g["count"]:>5} {args.currency}{g["total"]:,.2f}')
++            print(f"{'Total':<16} {'':>5} {args.currency}{total:,.2f}")
++    elif args.format == "json":
++        print(json.dumps([{"date": r["date"], "category": r["category"], "amount": float(r["amount"]), "note": r["note"]} for r in expenses], indent=2))
++    elif args.format == "csv":
++        writer = csv.writer(sys.stdout, lineterminator="\n")
++        writer.writerow(["date", "category", "amount", "note"])
++        writer.writerows((r["date"], r["category"], f'{r["amount"]:.2f}', r["note"]) for r in expenses)
++    else:
++        datew = max(10, max(len(r["date"]) for r in expenses))
++        catw = max(8, max(len(r["category"]) for r in expenses))
++        notew = max(4, min(24, max(len(r["note"]) for r in expenses)))
++        amountw = max(6, max(len(f'{r["amount"]:,.2f}') for r in expenses))
++        if not args.no_header:
++            print(f'{"Date":<{datew}}  {"Category":<{catw}}  {"Amount":>{amountw}}  Note')
++            print("-" * (datew + catw + amountw + notew + 6))
++        for r in expenses:
++            note = r["note"] if len(r["note"]) <= 24 else r["note"][:23] + "…"
++            amount = f'({abs(r["amount"]):,.2f})' if r["amount"] < 0 else f'{r["amount"]:,.2f}'
++            print(f'{r["date"]:<{datew}}  {r["category"]:<{catw}}  {args.currency + amount:>{amountw + len(args.currency)}}  {note}')
++        total = sum((r["amount"] for r in expenses), Decimal(0))
++        print(f'{"Total":<{datew}}  {"":<{catw}}  {args.currency + f"{total:,.2f}":>{amountw + len(args.currency)}}')
++
++    if invalid:
++        noun = "row" if invalid == 1 else "rows"
++        print(f"warning: skipped {invalid} {noun} with invalid amount", file=sys.stderr)
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main(sys.argv[1:]))

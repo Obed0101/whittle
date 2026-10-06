@@ -1,0 +1,28 @@
+{
+  "task": "pricing-page",
+  "arm": "caveman",
+  "run": "006",
+  "checks": 26,
+  "passed": 24,
+  "missed": [
+    "test_b09_price_change_is_announced",
+    "test_b14_table_is_readable_by_screen_readers"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 40,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 88.6,
+    "tokens": {
+      "input": 9680,
+      "output": 4274,
+      "cacheRead": 10752,
+      "cost": 0.003213
+    },
+    "turns": 6,
+    "tool_calls": 5
+  }
+}

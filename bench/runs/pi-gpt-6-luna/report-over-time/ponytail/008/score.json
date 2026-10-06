@@ -1,0 +1,29 @@
+{
+  "task": "report-over-time",
+  "arm": "ponytail",
+  "run": "008",
+  "checks": 40,
+  "passed": 37,
+  "missed": [
+    "test_r22_missing_file",
+    "test_r23_invalid_date",
+    "test_r24_from_after_to"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 137,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 162.3,
+    "tokens": {
+      "input": 47543,
+      "output": 5695,
+      "cacheRead": 75776,
+      "cost": 0.00836
+    },
+    "turns": 25,
+    "tool_calls": 26
+  }
+}

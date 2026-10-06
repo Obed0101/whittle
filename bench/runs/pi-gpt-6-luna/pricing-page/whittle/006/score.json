@@ -1,0 +1,27 @@
+{
+  "task": "pricing-page",
+  "arm": "whittle",
+  "run": "006",
+  "checks": 26,
+  "passed": 25,
+  "missed": [
+    "test_b07_billing_switch_is_a_real_control"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 78,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 102.1,
+    "tokens": {
+      "input": 7849,
+      "output": 5118,
+      "cacheRead": 4608,
+      "cost": 0.00339
+    },
+    "turns": 4,
+    "tool_calls": 3
+  }
+}

@@ -1,0 +1,335 @@
+diff --git a/notes/app.js b/notes/app.js
+new file mode 100644
+index 0000000..563b914
+--- /dev/null
++++ b/notes/app.js
+@@ -0,0 +1,200 @@
++'use strict';
++const KEY = 'notes.v1', TRASH_DAYS = 30;
++const $ = id => document.getElementById(id);
++const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
++const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
++
++let notes = load(), sel = null, view = 'all', q = '', preview = false, saveTimer = 0;
++
++function load() {
++  let a = [];
++  try { a = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) {}
++  const cutoff = Date.now() - TRASH_DAYS * 864e5;
++  return (Array.isArray(a) ? a : []).filter(n => n && n.id && !(n.deleted && n.deleted < cutoff)).map(clean);
++}
++const clean = n => ({
++  id: String(n.id), title: String(n.title || ''), body: String(n.body || ''),
++  tags: Array.isArray(n.tags) ? n.tags.map(String) : [], pinned: !!n.pinned,
++  created: +n.created || Date.now(), updated: +n.updated || Date.now(), deleted: n.deleted ? +n.deleted : null,
++});
++
++function save() {
++  clearTimeout(saveTimer); saveTimer = 0;
++  try { localStorage.setItem(KEY, JSON.stringify(notes)); $('saved').textContent = 'Saved'; }
++  catch (e) { $('saved').textContent = '⚠ Could not save (storage full?) — export your notes'; }
++}
++function queueSave() { $('saved').textContent = 'Saving…'; clearTimeout(saveTimer); saveTimer = setTimeout(save, 300); }
++const cur = () => notes.find(n => n.id === sel);
++const flush = () => saveTimer && save();
++
++function visible() {
++  let r = notes.filter(n => view === 'trash' ? n.deleted : !n.deleted);
++  if (view === 'pinned') r = r.filter(n => n.pinned);
++  else if (view.startsWith('tag:')) r = r.filter(n => n.tags.includes(view.slice(4)));
++  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
++  if (terms.length) r = r.filter(n => { const h = (n.title + ' ' + n.body + ' ' + n.tags.join(' ')).toLowerCase(); return terms.every(t => h.includes(t)); });
++  return r.sort((a, b) => b.pinned - a.pinned || b.updated - a.updated);
++}
++
++const fmt = t => { const d = new Date(t), now = new Date();
++  return d.toDateString() === now.toDateString() ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
++    : d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' }); };
++
++function renderSide() {
++  const live = notes.filter(n => !n.deleted);
++  const counts = { all: live.length, pinned: live.filter(n => n.pinned).length, trash: notes.length - live.length };
++  document.querySelectorAll('#views button').forEach(b => {
++    b.classList.toggle('on', b.dataset.view === view);
++    b.lastElementChild.textContent = counts[b.dataset.view];
++  });
++  const tc = {}; live.forEach(n => n.tags.forEach(t => tc[t] = (tc[t] || 0) + 1));
++  const tags = $('tags'); tags.textContent = '';
++  Object.keys(tc).sort().forEach(t => {
++    const b = document.createElement('button');
++    b.textContent = '#' + t + ' ' + tc[t]; b.dataset.view = 'tag:' + t;
++    b.classList.toggle('on', view === 'tag:' + t);
++    tags.append(b);
++  });
++  $('emptyTrash').hidden = !(view === 'trash' && counts.trash);
++  const list = $('list'); list.textContent = '';
++  const r = visible();
++  if (!r.length) { const li = document.createElement('li'); li.className = 'none'; li.textContent = q ? 'No matches.' : 'Nothing here.'; list.append(li); }
++  r.forEach(n => {
++    const li = document.createElement('li'), b = document.createElement('button');
++    b.dataset.id = n.id; b.classList.toggle('on', n.id === sel);
++    const t = document.createElement('b'); t.textContent = (n.pinned ? '📌 ' : '') + (n.title || 'Untitled');
++    const s = document.createElement('small'); s.textContent = n.body.replace(/\s+/g, ' ').slice(0, 100) || 'No content';
++    const m = document.createElement('i'); m.textContent = fmt(n.updated) + (n.tags.length ? '  ' + n.tags.map(x => '#' + x).join(' ') : '');
++    b.append(t, s, m); li.append(b); list.append(li);
++  });
++}
++
++function renderEditor() {
++  const n = cur();
++  $('editor').hidden = !n; $('empty').hidden = !!n;
++  if (!n) return;
++  const ro = !!n.deleted;
++  $('title').value = n.title; $('body').value = n.body; $('tagsIn').value = n.tags.join(', ');
++  [$('title'), $('body'), $('tagsIn')].forEach(e => e.readOnly = ro);
++  $('pin').classList.toggle('on', n.pinned); $('pin').hidden = ro;
++  $('restore').hidden = !ro; $('del').textContent = ro ? 'Delete forever' : 'Delete';
++  renderMode(); renderCount();
++}
++function renderMode() {
++  const n = cur(); $('preview').classList.toggle('on', preview);
++  $('body').hidden = preview; $('rendered').hidden = !preview;
++  if (preview && n) $('rendered').innerHTML = md(n.body);
++}
++function renderCount() {
++  const n = cur(); if (!n) return;
++  const w = n.body.trim().split(/\s+/).filter(Boolean).length;
++  $('count').textContent = w + (w === 1 ? ' word' : ' words') + ' · ' + n.body.length + ' chars';
++}
++
++// Markdown: input is HTML-escaped first, so output is safe to inject.
++function inline(s) {
++  return s.split(/(`[^`]+`)/).map((p, i) => i % 2 ? '<code>' + esc(p.slice(1, -1)) + '</code>'
++    : esc(p).replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
++      .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/(^|[\s(])\*([^*\s][^*]*?)\*/g, '$1<i>$2</i>').replace(/~~(.+?)~~/g, '<s>$1</s>')).join('');
++}
++function md(src) {
++  const out = []; let list = null, fence = null;
++  const close = () => { if (list) { out.push('</' + list + '>'); list = null; } };
++  const open = t => { if (list !== t) { close(); out.push('<' + t + '>'); list = t; } };
++  src.split('\n').forEach((line, i) => {
++    let m;
++    if (fence) { if (/^```/.test(line)) { out.push('<pre><code>' + esc(fence.join('\n')) + '</code></pre>'); fence = null; } else fence.push(line); return; }
++    if (/^```/.test(line)) { close(); fence = []; return; }
++    if (m = line.match(/^\s*[-*]\s+\[( |x|X)\]\s+(.*)/)) { open('ul'); const d = m[1] !== ' ';
++      out.push(`<li class="task${d ? ' done' : ''}"><input type="checkbox" data-line="${i}"${d ? ' checked' : ''}> ${inline(m[2])}</li>`); }
++    else if (m = line.match(/^\s*[-*]\s+(.*)/)) { open('ul'); out.push('<li>' + inline(m[1]) + '</li>'); }
++    else if (m = line.match(/^\s*\d+[.)]\s+(.*)/)) { open('ol'); out.push('<li>' + inline(m[1]) + '</li>'); }
++    else { close();
++      if (m = line.match(/^(#{1,3})\s+(.*)/)) out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`);
++      else if (m = line.match(/^>\s?(.*)/)) out.push('<blockquote>' + inline(m[1]) + '</blockquote>');
++      else if (/^(---+|\*\*\*+)\s*$/.test(line)) out.push('<hr>');
++      else if (line.trim()) out.push('<p>' + inline(line) + '</p>'); }
++  });
++  if (fence) out.push('<pre><code>' + esc(fence.join('\n')) + '</code></pre>');
++  close(); return out.join('');
++}
++
++function select(id) {
++  flush(); sel = id; $('app').classList.toggle('editing', !!id);
++  renderSide(); renderEditor();
++}
++function touch(n) { n.updated = Date.now(); queueSave(); renderSide(); }
++
++function newNote() {
++  if (view === 'trash') view = 'all';
++  q = ''; $('search').value = '';
++  const n = clean({ id: uid() }); notes.push(n); preview = false; save(); select(n.id); $('title').focus();
++}
++function remove() {
++  const n = cur(); if (!n) return;
++  if (n.deleted) { if (!confirm('Delete this note forever?')) return; notes = notes.filter(x => x !== n); }
++  else n.deleted = Date.now();
++  save(); select(null);
++}
++function download(name, text, type) {
++  const a = document.createElement('a');
++  a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click();
++  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
++}
++const stamp = () => new Date().toISOString().slice(0, 10);
++
++// events
++$('new').onclick = newNote;
++$('back').onclick = () => select(null);
++$('search').oninput = e => { q = e.target.value; renderSide(); };
++$('search').onkeydown = e => { if (e.key === 'Escape') { e.target.value = q = ''; renderSide(); } };
++$('list').onclick = e => { const b = e.target.closest('button'); if (b) select(b.dataset.id); };
++function pickView(e) { const b = e.target.closest('button'); if (!b) return;
++  view = view === b.dataset.view && view.startsWith('tag:') ? 'all' : b.dataset.view; renderSide(); }
++$('views').onclick = pickView; $('tags').onclick = pickView;
++$('title').oninput = e => { const n = cur(); n.title = e.target.value; touch(n); };
++$('body').oninput = e => { const n = cur(); n.body = e.target.value; touch(n); renderCount(); };
++$('tagsIn').oninput = e => { const n = cur();
++  n.tags = [...new Set(e.target.value.split(',').map(t => t.trim().replace(/^#/, '').toLowerCase()).filter(Boolean))]; touch(n); };
++$('pin').onclick = () => { const n = cur(); n.pinned = !n.pinned; $('pin').classList.toggle('on', n.pinned); touch(n); };
++$('preview').onclick = () => { preview = !preview; renderMode(); };
++$('del').onclick = remove;
++$('restore').onclick = () => { const n = cur(); n.deleted = null; n.updated = Date.now(); save(); select(null); };
++$('emptyTrash').onclick = () => { if (confirm('Permanently delete everything in the trash?')) { notes = notes.filter(n => !n.deleted); save(); select(null); } };
++$('md').onclick = () => { const n = cur();
++  download((n.title || 'untitled').replace(/[^\w\- ]+/g, '').trim().slice(0, 60) + '.md', (n.title ? '# ' + n.title + '\n\n' : '') + n.body, 'text/markdown'); };
++$('rendered').onchange = e => { // toggle task checkboxes in preview
++  const i = e.target.dataset.line, n = cur(); if (i == null || n.deleted) return;
++  const lines = n.body.split('\n');
++  lines[i] = lines[i].replace(/\[( |x|X)\]/, e.target.checked ? '[x]' : '[ ]');
++  n.body = lines.join('\n'); touch(n); renderMode();
++};
++$('export').onclick = () => download('notes-' + stamp() + '.json', JSON.stringify(notes, null, 2), 'application/json');
++$('import').onclick = () => $('file').click();
++$('file').onchange = async e => {
++  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
++  try {
++    const a = JSON.parse(await f.text()); if (!Array.isArray(a)) throw 0;
++    let added = 0;
++    a.filter(x => x && x.id).map(clean).forEach(n => {
++      const o = notes.find(x => x.id === n.id);
++      if (!o) { notes.push(n); added++; } else if (n.updated > o.updated) Object.assign(o, n);
++    });
++    save(); renderSide(); renderEditor(); alert('Imported ' + added + ' new note(s).');
++  } catch (err) { alert('Not a valid notes export.'); }
++};
++document.addEventListener('keydown', e => {
++  const mod = e.ctrlKey || e.metaKey;
++  if (mod && e.code === 'KeyK') { e.preventDefault(); $('app').classList.remove('editing'); $('search').focus(); $('search').select(); }
++  else if (mod && e.code === 'KeyS') { e.preventDefault(); save(); }
++  else if (e.altKey && e.code === 'KeyN') { e.preventDefault(); newNote(); }
++  else if (e.altKey && e.code === 'KeyP' && cur()) { e.preventDefault(); $('preview').click(); }
++});
++window.addEventListener('beforeunload', flush);
++document.addEventListener('visibilitychange', () => document.hidden && flush());
++window.addEventListener('storage', e => { // another tab saved
++  if (e.key !== KEY) return;
++  notes = load(); if (sel && !cur()) sel = null; renderSide(); renderEditor();
++});
++
++save(); renderSide(); renderEditor();
+diff --git a/notes/index.html b/notes/index.html
+new file mode 100644
+index 0000000..0a67b41
+--- /dev/null
++++ b/notes/index.html
+@@ -0,0 +1,52 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Notes</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<div id="app">
++  <aside id="side">
++    <div class="row">
++      <input id="search" type="search" placeholder="Search  (Ctrl/⌘ K)" aria-label="Search notes">
++      <button id="new" class="primary" title="New note (Alt N)">+ New</button>
++    </div>
++    <nav id="views">
++      <button data-view="all">All <span></span></button>
++      <button data-view="pinned">Pinned <span></span></button>
++      <button data-view="trash">Trash <span></span></button>
++    </nav>
++    <div id="tags"></div>
++    <button id="emptyTrash" hidden>Empty trash</button>
++    <ul id="list"></ul>
++    <footer>
++      <button id="export" title="Download all notes as JSON">Export</button>
++      <button id="import" title="Merge notes from a JSON export">Import</button>
++      <input id="file" type="file" accept="application/json,.json" hidden>
++    </footer>
++  </aside>
++  <main id="main">
++    <div id="empty"><p>No note selected.</p><p class="muted">Press <kbd>Alt</kbd>+<kbd>N</kbd> or “+ New” to start writing.</p></div>
++    <section id="editor" hidden>
++      <div class="bar">
++        <button id="back" title="Back to list">←</button>
++        <button id="pin" title="Pin">Pin</button>
++        <button id="preview" title="Toggle preview (Alt P)">Preview</button>
++        <button id="md" title="Download as Markdown">.md</button>
++        <span class="grow"></span>
++        <button id="restore" hidden>Restore</button>
++        <button id="del" class="danger">Delete</button>
++      </div>
++      <input id="title" placeholder="Title" aria-label="Title" maxlength="200">
++      <input id="tagsIn" placeholder="tags, comma separated" aria-label="Tags">
++      <textarea id="body" placeholder="Write here… Markdown supported (# headings, **bold**, - [ ] tasks, `code`)" aria-label="Note body"></textarea>
++      <div id="rendered" hidden></div>
++      <div class="status"><span id="count"></span><span id="saved"></span></div>
++    </section>
++  </main>
++</div>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/notes/style.css b/notes/style.css
+new file mode 100644
+index 0000000..362eab1
+--- /dev/null
++++ b/notes/style.css
+@@ -0,0 +1,65 @@
++:root{--bg:#fff;--panel:#f6f6f4;--fg:#1c1c1a;--muted:#77776f;--line:#e2e2dd;--accent:#2f6fed;--sel:#e4ecfd;--danger:#c93030;color-scheme:light dark}
++@media (prefers-color-scheme:dark){:root{--bg:#18181a;--panel:#202023;--fg:#e8e8e4;--muted:#908f88;--line:#323236;--accent:#6c9cff;--sel:#2a3550;--danger:#ef6b6b}}
++*{box-sizing:border-box}
++html,body{height:100%;margin:0}
++body{font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--fg)}
++button,input,textarea{font:inherit;color:inherit}
++button{background:none;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
++button:hover{background:var(--sel)}
++button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
++button.danger{color:var(--danger)}
++button.on{background:var(--sel);border-color:var(--accent)}
++:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
++.muted{color:var(--muted)}
++kbd{border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:.85em}
++#app{display:flex;height:100%}
++#side{width:320px;min-width:260px;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:10px;gap:8px}
++.row{display:flex;gap:6px}
++#search{flex:1;min-width:0;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
++#views{display:flex;gap:4px}
++#views button{flex:1;border:0;padding:3px 4px;font-size:.9em}
++#views button.on{background:var(--sel);font-weight:600}
++#views span{color:var(--muted);font-weight:400}
++#tags{display:flex;flex-wrap:wrap;gap:4px}
++#tags button{padding:0 8px;border-radius:99px;font-size:.8em;color:var(--muted)}
++#tags button.on{color:var(--fg)}
++#list{list-style:none;margin:0;padding:0;overflow:auto;flex:1}
++#list button{display:block;width:100%;text-align:left;border:0;border-radius:6px;padding:8px;margin-bottom:2px}
++#list button.on{background:var(--sel)}
++#list b,#list small,#list i{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++#list small,#list i{color:var(--muted);font-size:.82em;font-style:normal}
++#list .none{padding:12px 8px;color:var(--muted)}
++#side footer{display:flex;gap:6px}
++#side footer button{flex:1}
++#main{flex:1;min-width:0;display:flex}
++#empty{margin:auto;text-align:center}
++#editor{flex:1;display:flex;flex-direction:column;padding:14px 24px;gap:8px;min-width:0;max-width:900px;margin:0 auto}
++.bar{display:flex;gap:6px;align-items:center}
++.grow{flex:1}
++#back{display:none}
++#title{font-size:1.6rem;font-weight:700;border:0;background:none;padding:4px 0}
++#tagsIn{border:0;border-bottom:1px solid var(--line);background:none;padding:4px 0;color:var(--muted)}
++#title:focus,#tagsIn:focus{outline:0}
++#body,#rendered{flex:1;overflow:auto;border:0;background:none;resize:none;padding:6px 0;line-height:1.65}
++#body{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.93rem}
++#body:focus{outline:0}
++#rendered h1,#rendered h2,#rendered h3{margin:1em 0 .3em;line-height:1.25}
++#rendered p{margin:.5em 0}
++#rendered code{background:var(--panel);padding:1px 5px;border-radius:4px}
++#rendered pre{background:var(--panel);padding:10px;border-radius:6px;overflow:auto}
++#rendered pre code{padding:0}
++#rendered blockquote{margin:.5em 0;padding-left:12px;border-left:3px solid var(--line);color:var(--muted)}
++#rendered a{color:var(--accent)}
++#rendered hr{border:0;border-top:1px solid var(--line)}
++#rendered li.task{list-style:none;margin-left:-1.2em}
++#rendered li.done{color:var(--muted);text-decoration:line-through}
++.status{display:flex;justify-content:space-between;color:var(--muted);font-size:.8em}
++[hidden]{display:none!important}
++@media (max-width:700px){
++  #side{width:100%;border:0}
++  #main{display:none}
++  #app.editing #side{display:none}
++  #app.editing #main{display:flex}
++  #editor{padding:10px 14px}
++  #back{display:inline-block}
++}

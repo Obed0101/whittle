@@ -1,0 +1,409 @@
+diff --git a/board/app.js b/board/app.js
+new file mode 100644
+index 0000000..00bb69b
+--- /dev/null
++++ b/board/app.js
+@@ -0,0 +1,301 @@
++'use strict';
++const KEY = 'kanban.v1';
++const $ = s => document.querySelector(s);
++const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
++const el = (tag, props = {}, ...kids) => {
++  const e = document.createElement(tag);
++  for (const [k, v] of Object.entries(props)) k in e ? (e[k] = v) : e.setAttribute(k, v);
++  e.append(...kids);
++  return e;
++};
++const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
++
++const fresh = () => ({
++  id: uid(), name: 'My board',
++  columns: ['To do', 'Doing', 'Done'].map(name => ({ id: uid(), name, cards: [] })),
++});
++const valid = d => d && Array.isArray(d.boards) && d.boards.length &&
++  d.boards.every(b => b && Array.isArray(b.columns) && b.columns.every(c => c && Array.isArray(c.cards)));
++
++let S;
++try { S = JSON.parse(localStorage.getItem(KEY)); } catch { S = null; }
++if (!valid(S)) { const b = fresh(); S = { boards: [b], current: b.id, theme: '' }; }
++const history = [];
++let query = '';
++
++const board = () => S.boards.find(b => b.id === S.current) || (S.current = S.boards[0].id, S.boards[0]);
++const findCard = id => {
++  for (const col of board().columns) {
++    const i = col.cards.findIndex(c => c.id === id);
++    if (i >= 0) return { col, i, card: col.cards[i] };
++  }
++};
++
++function save() {
++  try { localStorage.setItem(KEY, JSON.stringify(S)); }
++  catch { toast('⚠ Could not save (storage full or blocked). Use Export to back up.'); }
++}
++function commit(fn) {
++  history.push(JSON.stringify(S));
++  if (history.length > 100) history.shift();
++  fn(); save(); render();
++}
++function undo() {
++  if (!history.length) return;
++  S = JSON.parse(history.pop()); save(); render();
++}
++let toastTimer;
++function toast(msg, action) {
++  const t = $('#toast');
++  t.replaceChildren(msg);
++  if (action) t.append(el('button', { textContent: action.label, onclick: () => { action.fn(); t.hidden = true; } }));
++  t.hidden = false;
++  clearTimeout(toastTimer);
++  toastTimer = setTimeout(() => (t.hidden = true), 5000);
++}
++
++// ---------- render ----------
++const hue = s => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
++const labelEl = l => el('span', { className: 'label', textContent: l, style: `background:hsl(${hue(l)} 55% 42%)` });
++const fmt = d => new Date(d + 'T00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
++const matches = c => !query ||
++  [c.title, c.desc, ...(c.labels || [])].join('\n').toLowerCase().includes(query);
++
++function cardEl(c, col) {
++  const done = col === board().columns.at(-1) && board().columns.length > 1;
++  const meta = el('div', { className: 'meta' });
++  if (c.due) {
++    const t = today();
++    meta.append(el('span', { className: !done && c.due < t ? 'over' : !done && c.due === t ? 'soon' : '', textContent: '📅 ' + fmt(c.due) }));
++  }
++  if (c.check?.length) meta.append(`☑ ${c.check.filter(i => i.done).length}/${c.check.length}`);
++  if (c.desc) meta.append('≡');
++  const e = el('div', { className: 'card' + (done ? ' done' : ''), draggable: true, tabIndex: 0 },
++    el('div', { className: 't', textContent: c.title }),
++    ...(c.labels?.length ? [el('div', { className: 'meta' }, ...c.labels.map(labelEl))] : []),
++    ...(meta.childNodes.length ? [meta] : []));
++  e.dataset.id = c.id;
++  e.dataset.p = c.prio || 0;
++  e.onclick = () => openCard(c.id);
++  e.onkeydown = ev => { if (ev.key === 'Enter') openCard(c.id); };
++  return e;
++}
++
++function colEl(col) {
++  const cards = el('div', { className: 'cards' }, ...col.cards.filter(matches).map(c => cardEl(c, col)));
++  cards.dataset.col = col.id;
++  const name = el('input', { className: 'colname', value: col.name, maxLength: 60, title: 'Rename column' });
++  name.onchange = () => name.value.trim()
++    ? commit(() => (col.name = name.value.trim())) : (name.value = col.name);
++  name.onkeydown = e => { if (e.key === 'Enter') name.blur(); };
++  const handle = el('span', { className: 'handle', textContent: '⠿', draggable: true, title: 'Drag to reorder' });
++  const del = el('button', { textContent: '✕', title: 'Delete column', onclick: () => {
++    if (col.cards.length && !confirm(`Delete "${col.name}" and its ${col.cards.length} card(s)?`)) return;
++    commit(() => (board().columns = board().columns.filter(c => c !== col)));
++    toast('Column deleted', { label: 'Undo', fn: undo });
++  } });
++  const add = el('input', { className: 'add', placeholder: '＋ Add card (Enter)', maxLength: 200 });
++  add.onkeydown = e => {
++    const t = add.value.trim();
++    if (e.key === 'Enter' && t) {
++      commit(() => col.cards.push({ id: uid(), title: t, desc: '', due: '', prio: 0, labels: [], check: [], created: Date.now() }));
++      document.querySelector(`.cards[data-col="${col.id}"]`).nextElementSibling.focus();
++    }
++  };
++  const e = el('section', { className: 'col' },
++    el('div', { className: 'colhead' }, handle, name, el('span', { className: 'count', textContent: col.cards.length }), del),
++    cards, add);
++  e.dataset.id = col.id;
++  handle.ondragstart = ev => {
++    drag = { type: 'col', el: e };
++    ev.dataTransfer.setData('text/plain', col.id);
++    ev.dataTransfer.setDragImage(e, 20, 20);
++    setTimeout(() => e.classList.add('dragging'));
++  };
++  return e;
++}
++
++function render() {
++  const b = board();
++  const sel = $('#boardSel');
++  sel.replaceChildren(...S.boards.map(x => el('option', { value: x.id, textContent: x.name, selected: x.id === b.id })));
++  $('#boardDel').disabled = S.boards.length < 2;
++  $('#undo').disabled = !history.length;
++  document.documentElement.dataset.theme = S.theme ||
++    (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
++  const addCol = el('button', { className: 'addcol', textContent: '＋ Add column', onclick: () => {
++    const name = prompt('Column name');
++    if (name?.trim()) commit(() => b.columns.push({ id: uid(), name: name.trim(), cards: [] }));
++  } });
++  $('#board').replaceChildren(...b.columns.map(colEl), addCol);
++}
++
++// ---------- drag & drop ----------
++let drag = null, dropped = false;
++const boardEl = $('#board');
++function after(container, sel, pos, horiz) {
++  let best = { off: -Infinity, el: null };
++  for (const x of container.querySelectorAll(sel)) {
++    if (x === drag?.el) continue;
++    const r = x.getBoundingClientRect();
++    const off = pos - (horiz ? r.left + r.width / 2 : r.top + r.height / 2);
++    if (off < 0 && off > best.off) best = { off, el: x };
++  }
++  return best.el;
++}
++boardEl.addEventListener('dragstart', e => {
++  const c = e.target.closest?.('.card');
++  if (!c) return;
++  drag = { type: 'card', el: c }; dropped = false;
++  e.dataTransfer.setData('text/plain', c.dataset.id);
++  setTimeout(() => c.classList.add('dragging'));
++});
++boardEl.addEventListener('dragover', e => {
++  if (!drag) return;
++  e.preventDefault();
++  if (drag.type === 'col') {
++    const next = after(boardEl, '.col', e.clientX, true);
++    boardEl.insertBefore(drag.el, next || boardEl.querySelector('.addcol'));
++  } else {
++    const cards = e.target.closest?.('.col')?.querySelector('.cards');
++    if (cards) cards.insertBefore(drag.el, after(cards, '.card', e.clientY));
++  }
++});
++boardEl.addEventListener('drop', e => { if (drag) { e.preventDefault(); dropped = true; } });
++boardEl.addEventListener('dragend', () => {
++  const d = drag; drag = null;
++  if (!d) return;
++  d.el.classList.remove('dragging');
++  if (d.type === 'col') {
++    const order = [...boardEl.querySelectorAll('.col')].map(c => c.dataset.id);
++    return commit(() => board().columns.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id)));
++  }
++  const cont = d.el.parentElement;
++  if (!dropped || !cont?.dataset.col) return render();
++  const id = d.el.dataset.id;
++  const ids = [...cont.querySelectorAll('.card')].map(c => c.dataset.id);
++  commit(() => {
++    const { col, card } = findCard(id);
++    col.cards = col.cards.filter(c => c !== card);
++    const dest = board().columns.find(c => c.id === cont.dataset.col);
++    // position among visible cards; map to full list (hidden-by-search cards stay in place)
++    const nxt = ids[ids.indexOf(id) + 1];
++    const at = nxt ? dest.cards.findIndex(c => c.id === nxt) : dest.cards.length;
++    dest.cards.splice(at, 0, card);
++  });
++});
++
++// ---------- card dialog ----------
++const dlg = $('#dlg');
++let editing = null, check = [];
++
++function drawCheck() {
++  $('#fCheck').replaceChildren(...check.map((it, i) => {
++    const cb = el('input', { type: 'checkbox', checked: it.done, onchange: () => (it.done = cb.checked) });
++    const tx = el('input', { type: 'text', value: it.text, placeholder: 'Item', oninput: () => (it.text = tx.value) });
++    tx.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); addCheck(); } };
++    return el('div', { className: 'ci' }, cb, tx,
++      el('button', { type: 'button', textContent: '✕', onclick: () => { check.splice(i, 1); drawCheck(); } }));
++  }));
++}
++function addCheck() {
++  check.push({ text: '', done: false }); drawCheck();
++  $('#fCheck').lastElementChild.querySelector('[type=text]').focus();
++}
++$('#fAdd').onclick = addCheck;
++
++function openCard(id) {
++  const { col, card } = findCard(id);
++  editing = id;
++  $('#fTitle').value = card.title;
++  $('#fDesc').value = card.desc || '';
++  $('#fPrio').value = card.prio || 0;
++  $('#fDue').value = card.due || '';
++  $('#fLabels').value = (card.labels || []).join(', ');
++  $('#fCol').replaceChildren(...board().columns.map(c => el('option', { value: c.id, textContent: c.name, selected: c === col })));
++  check = (card.check || []).map(i => ({ ...i }));
++  drawCheck();
++  $('#fMeta').textContent = card.created ? 'Created ' + new Date(card.created).toLocaleString() : '';
++  dlg.showModal();
++}
++$('#fCancel').onclick = () => dlg.close();
++dlg.addEventListener('mousedown', e => { if (e.target === dlg) dlg.close(); });
++$('#fDel').onclick = () => {
++  const id = editing; dlg.close();
++  commit(() => { const { col, card } = findCard(id); col.cards = col.cards.filter(c => c !== card); });
++  toast('Card deleted', { label: 'Undo', fn: undo });
++};
++$('#form').onsubmit = () => {
++  const id = editing;
++  commit(() => {
++    const { col, card } = findCard(id);
++    Object.assign(card, {
++      title: $('#fTitle').value.trim(),
++      desc: $('#fDesc').value.trim(),
++      prio: +$('#fPrio').value,
++      due: $('#fDue').value,
++      labels: [...new Set($('#fLabels').value.split(',').map(s => s.trim()).filter(Boolean))],
++      check: check.filter(i => i.text.trim()).map(i => ({ text: i.text.trim(), done: i.done })),
++    });
++    if ($('#fCol').value !== col.id) {
++      col.cards = col.cards.filter(c => c !== card);
++      board().columns.find(c => c.id === $('#fCol').value).cards.push(card);
++    }
++  });
++};
++
++// ---------- header actions ----------
++$('#boardSel').onchange = e => { S.current = e.target.value; save(); render(); };
++$('#boardNew').onclick = () => {
++  const name = prompt('Board name');
++  if (name?.trim()) commit(() => { const b = fresh(); b.name = name.trim(); S.boards.push(b); S.current = b.id; });
++};
++$('#boardRen').onclick = () => {
++  const name = prompt('Board name', board().name);
++  if (name?.trim()) commit(() => (board().name = name.trim()));
++};
++$('#boardDel').onclick = () => {
++  if (!confirm(`Delete board "${board().name}" and all its cards?`)) return;
++  commit(() => { S.boards = S.boards.filter(b => b !== board()); S.current = S.boards[0].id; });
++  toast('Board deleted', { label: 'Undo', fn: undo });
++};
++$('#undo').onclick = undo;
++$('#theme').onclick = () => {
++  S.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
++  save(); render();
++};
++$('#search').oninput = e => { query = e.target.value.trim().toLowerCase(); render(); };
++$('#export').onclick = () => {
++  const a = el('a', {
++    href: URL.createObjectURL(new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' })),
++    download: `kanban-${today()}.json`,
++  });
++  a.click(); URL.revokeObjectURL(a.href);
++};
++$('#import').onclick = () => $('#file').click();
++$('#file').onchange = async e => {
++  const f = e.target.files[0]; e.target.value = '';
++  if (!f) return;
++  try {
++    const d = JSON.parse(await f.text());
++    if (!valid(d)) throw 0;
++    if (!confirm('Replace ALL current boards with this backup? (Undo is available.)')) return;
++    commit(() => { S = { theme: S.theme, ...d }; S.theme = d.theme ?? S.theme; });
++  } catch { toast('⚠ Not a valid kanban backup file.'); }
++};
++
++// ---------- keyboard + multi-tab sync ----------
++document.addEventListener('keydown', e => {
++  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
++  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !typing && !dlg.open) { e.preventDefault(); undo(); }
++  else if (!typing && !dlg.open && !e.ctrlKey && !e.metaKey) {
++    if (e.key === '/') { e.preventDefault(); $('#search').focus(); }
++    else if (e.key === 'n') { e.preventDefault(); document.querySelector('.add')?.focus(); }
++  }
++});
++addEventListener('storage', e => {
++  if (e.key !== KEY || dlg.open) return;
++  try { const d = JSON.parse(e.newValue); if (valid(d)) { S = d; render(); } } catch {}
++});
++
++render();
+diff --git a/board/index.html b/board/index.html
+new file mode 100644
+index 0000000..cfef497
+--- /dev/null
++++ b/board/index.html
+@@ -0,0 +1,50 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<title>Kanban</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<header>
++  <select id="boardSel" title="Switch board"></select>
++  <button id="boardNew" title="New board">＋ Board</button>
++  <button id="boardRen" title="Rename board">Rename</button>
++  <button id="boardDel" title="Delete board">Delete</button>
++  <input id="search" type="search" placeholder="Search cards ( / )">
++  <span class="spacer"></span>
++  <button id="undo" title="Undo (Ctrl/⌘+Z)">↶ Undo</button>
++  <button id="export" title="Download backup">Export</button>
++  <button id="import" title="Restore from backup">Import</button>
++  <button id="theme" title="Toggle theme">◐</button>
++  <input id="file" type="file" accept="application/json" hidden>
++</header>
++<main id="board"></main>
++
++<dialog id="dlg">
++  <form method="dialog" id="form">
++    <input id="fTitle" required maxlength="200" placeholder="Title">
++    <textarea id="fDesc" rows="5" placeholder="Description"></textarea>
++    <div class="row">
++      <label>Column <select id="fCol"></select></label>
++      <label>Priority <select id="fPrio">
++        <option value="0">None</option><option value="1">Low</option>
++        <option value="2">Medium</option><option value="3">High</option></select></label>
++      <label>Due <input id="fDue" type="date"></label>
++    </div>
++    <label>Labels (comma separated) <input id="fLabels" placeholder="work, home"></label>
++    <div>Checklist <div id="fCheck"></div><button type="button" id="fAdd">＋ Item</button></div>
++    <small id="fMeta"></small>
++    <div class="row actions">
++      <button type="button" id="fDel" class="danger">Delete</button>
++      <span class="spacer"></span>
++      <button type="button" id="fCancel">Cancel</button>
++      <button type="submit" class="primary">Save</button>
++    </div>
++  </form>
++</dialog>
++<div id="toast" hidden></div>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/board/style.css b/board/style.css
+new file mode 100644
+index 0000000..13a4b40
+--- /dev/null
++++ b/board/style.css
+@@ -0,0 +1,40 @@
++:root{--bg:#f3f4f6;--panel:#e5e7eb;--card:#fff;--text:#111827;--mut:#6b7280;--line:#d1d5db;--acc:#2563eb;--red:#dc2626;--amb:#d97706}
++:root[data-theme=dark]{--bg:#111318;--panel:#1c1f27;--card:#272b36;--text:#e5e7eb;--mut:#9ca3af;--line:#3a3f4d;--acc:#60a5fa;--red:#f87171;--amb:#fbbf24}
++*{box-sizing:border-box}
++body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,sans-serif}
++header{display:flex;gap:6px;align-items:center;padding:8px 12px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
++.spacer{flex:1}
++button,select,input,textarea{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:5px 9px}
++button{cursor:pointer}button:hover{border-color:var(--acc)}
++button:disabled{opacity:.4;cursor:default}
++.primary{background:var(--acc);color:#fff;border-color:var(--acc)}
++.danger{color:var(--red)}
++#board{flex:1;display:flex;gap:12px;padding:12px;overflow-x:auto;align-items:flex-start}
++.col{width:290px;flex:none;max-height:100%;display:flex;flex-direction:column;background:var(--panel);border-radius:10px;padding:8px}
++.col.dragging,.card.dragging{opacity:.4}
++.colhead{display:flex;align-items:center;gap:4px;margin-bottom:6px}
++.handle{cursor:grab;color:var(--mut);padding:0 4px;user-select:none}
++.colname{flex:1;min-width:0;font-weight:600;background:transparent;border-color:transparent}
++.colname:hover,.colname:focus{background:var(--card);border-color:var(--line)}
++.count{color:var(--mut);font-size:12px}
++.colhead button{padding:2px 6px;border-color:transparent;background:transparent;color:var(--mut)}
++.cards{flex:1;overflow-y:auto;min-height:30px;display:flex;flex-direction:column;gap:6px;padding:2px}
++.card{background:var(--card);border-radius:8px;padding:8px 10px;cursor:pointer;border-left:4px solid transparent;box-shadow:0 1px 2px #0002;word-break:break-word}
++.card:hover{outline:1px solid var(--acc)}
++.card[data-p="1"]{border-left-color:#22c55e}.card[data-p="2"]{border-left-color:var(--amb)}.card[data-p="3"]{border-left-color:var(--red)}
++.card.done .t{text-decoration:line-through;color:var(--mut)}
++.meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:5px;font-size:12px;color:var(--mut)}
++.over{color:var(--red);font-weight:600}.soon{color:var(--amb);font-weight:600}
++.label{font-size:11px;padding:0 6px;border-radius:9px;color:#fff;margin-right:3px}
++.add{margin-top:6px;width:100%}
++.addcol{width:290px;flex:none}
++dialog{border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--text);width:min(520px,94vw);padding:16px}
++dialog::backdrop{background:#0008}
++form{display:flex;flex-direction:column;gap:10px}
++form label{display:flex;flex-direction:column;gap:3px;color:var(--mut);font-size:12px}
++.row{display:flex;gap:10px;flex-wrap:wrap}.row label{flex:1}
++#fTitle{font-size:16px;font-weight:600}
++.ci{display:flex;gap:6px;margin:4px 0}.ci input[type=text]{flex:1}
++small{color:var(--mut)}
++#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:8px 14px;border-radius:8px;display:flex;gap:12px;align-items:center}
++#toast button{background:none;color:inherit;font-weight:700;border:0}

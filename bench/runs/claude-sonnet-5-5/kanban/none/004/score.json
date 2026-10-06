@@ -1,0 +1,25 @@
+{
+  "task": "kanban",
+  "arm": "none",
+  "run": "004",
+  "checks": 40,
+  "passed": 39,
+  "missed": [
+    "test_k40_reset_or_clear_board"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 853,
+  "agent": {
+    "harness": "claude",
+    "model": "claude-sonnet-5-5",
+    "exit": 0,
+    "seconds": 227.3,
+    "tokens": {
+      "input": 37166,
+      "output": 33432,
+      "cacheRead": 221842,
+      "cost": 0.527328
+    },
+    "turns": 7
+  }
+}

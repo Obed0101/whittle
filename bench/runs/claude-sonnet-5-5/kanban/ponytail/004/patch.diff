@@ -1,0 +1,286 @@
+diff --git a/board/app.js b/board/app.js
+new file mode 100644
+index 0000000..0420b23
+--- /dev/null
++++ b/board/app.js
+@@ -0,0 +1,178 @@
++'use strict';
++const KEY = 'kanban.v1';
++const $ = s => document.querySelector(s);
++const uid = () => Math.random().toString(36).slice(2, 10);
++const h = (t, a = {}, ...c) => {
++  const e = document.createElement(t);
++  for (const k in a) k.startsWith('on') ? e.addEventListener(k.slice(2), a[k]) : k in e ? e[k] = a[k] : e.setAttribute(k, a[k]);
++  e.append(...c);
++  return e;
++};
++
++const fresh = () => ({ columns: ['To do', 'Doing', 'Done'].map(title => ({ id: uid(), title, cards: [] })) });
++function clean(s) { // validate anything coming from storage/import
++  if (!s || !Array.isArray(s.columns)) throw new Error('bad');
++  return { columns: s.columns.map(c => ({
++    id: String(c.id || uid()), title: String(c.title || 'Untitled'),
++    cards: (Array.isArray(c.cards) ? c.cards : []).map(k => ({
++      id: String(k.id || uid()), title: String(k.title || 'Untitled'), notes: String(k.notes || ''),
++      priority: ['low', 'med', 'high'].includes(k.priority) ? k.priority : '',
++      due: /^\d{4}-\d{2}-\d{2}$/.test(k.due) ? k.due : '',
++      tags: Array.isArray(k.tags) ? k.tags.map(String) : [],
++    })),
++  })) };
++}
++const load = () => { try { return clean(JSON.parse(localStorage.getItem(KEY))); } catch { return fresh(); } };
++
++let S = load(), query = '', focusCol = null, dragEl = null;
++const save = () => { localStorage.setItem(KEY, JSON.stringify(S)); render(); };
++const find = id => { for (const col of S.columns) { const card = col.cards.find(c => c.id === id); if (card) return { col, card }; } };
++
++// Run a destructive change with a one-click undo.
++function destructive(fn, msg) {
++  const snap = JSON.stringify(S);
++  fn(); save();
++  const t = $('#toast');
++  t.firstElementChild.textContent = msg;
++  t.hidden = false;
++  clearTimeout(t.timer);
++  t.timer = setTimeout(() => t.hidden = true, 6000);
++  t.lastElementChild.onclick = () => { S = JSON.parse(snap); t.hidden = true; save(); };
++}
++
++function move(id, colId, beforeId) {
++  const { col, card } = find(id);
++  col.cards.splice(col.cards.indexOf(card), 1);
++  const to = S.columns.find(c => c.id === colId);
++  const i = beforeId ? to.cards.findIndex(c => c.id === beforeId) : -1;
++  to.cards.splice(i < 0 ? to.cards.length : i, 0, card);
++  save();
++}
++
++const today = () => new Date().toLocaleDateString('en-CA');
++function matches(c) {
++  const q = query.toLowerCase();
++  return !q || [c.title, c.notes, ...c.tags].some(s => s.toLowerCase().includes(q));
++}
++
++function cardEl(c) {
++  const meta = h('div', { class: 'meta' });
++  if (c.due) meta.append(h('span', { class: 'chip ' + (c.due < today() ? 'over' : c.due === today() ? 'today' : '') }, '📅 ' + c.due));
++  c.tags.forEach(t => meta.append(h('span', { class: 'chip' }, '#' + t)));
++  if (c.notes) meta.append(h('span', { title: 'Has notes' }, '≡'));
++  const el = h('div', {
++    class: 'card', draggable: true, tabIndex: 0, onclick: () => openCard(c.id),
++    onkeydown: e => e.key === 'Enter' && openCard(c.id),
++    ondragstart: e => { dragEl = el; e.dataTransfer.setData('text/plain', c.id); e.dataTransfer.effectAllowed = 'move'; el.classList.add('dragging'); },
++    ondragend: () => { dragEl = null; render(); },
++  }, h('div', { class: 't' }, c.title), meta);
++  el.dataset.id = c.id;
++  if (c.priority) el.dataset.p = c.priority;
++  return el;
++}
++
++function colEl(col) {
++  const shown = col.cards.filter(matches);
++  const list = h('div', {
++    class: 'list',
++    ondragover: e => {
++      if (!dragEl) return;
++      e.preventDefault();
++      const after = [...list.querySelectorAll('.card:not(.dragging)')]
++        .find(k => e.clientY < k.getBoundingClientRect().top + k.offsetHeight / 2);
++      list.insertBefore(dragEl, after || null);
++    },
++    ondrop: e => {
++      e.preventDefault();
++      if (dragEl) move(dragEl.dataset.id, col.id, dragEl.nextElementSibling?.dataset.id);
++    },
++  }, ...shown.map(cardEl));
++  const add = h('input', {
++    class: 'add', placeholder: '+ Add card', maxLength: 200, 'aria-label': 'Add card to ' + col.title,
++    onkeydown: e => {
++      const title = add.value.trim();
++      if (e.key !== 'Enter' || !title) return;
++      col.cards.push({ id: uid(), title, notes: '', priority: '', due: '', tags: [] });
++      focusCol = col.id; save();
++    },
++  });
++  add.dataset.col = col.id;
++  const name = h('input', {
++    class: 'name', value: col.title, 'aria-label': 'Column name',
++    onchange: () => { col.title = name.value.trim() || col.title; save(); },
++    onkeydown: e => e.key === 'Enter' && name.blur(),
++  });
++  const del = h('button', {
++    class: 'x', title: 'Delete column', 'aria-label': 'Delete column',
++    onclick: () => destructive(() => S.columns = S.columns.filter(c => c !== col),
++      `Deleted column "${col.title}" (${col.cards.length} cards)`),
++  }, '✕');
++  return h('section', { class: 'col' },
++    h('header', {}, name, h('span', { class: 'count' }, query ? `${shown.length}/${col.cards.length}` : col.cards.length), del),
++    list, add);
++}
++
++function render() {
++  const nc = h('input', {
++    placeholder: '+ Add column', maxLength: 60, 'aria-label': 'Add column',
++    onkeydown: e => {
++      const title = nc.value.trim();
++      if (e.key !== 'Enter' || !title) return;
++      S.columns.push({ id: uid(), title, cards: [] }); save();
++    },
++  });
++  $('#board').replaceChildren(...S.columns.map(colEl), h('div', { class: 'newcol' }, nc));
++  if (focusCol) $(`.add[data-col="${focusCol}"]`)?.focus();
++  focusCol = null;
++}
++
++// Card editor
++const dlg = $('#dlg'), form = $('#form');
++let editing = null;
++function openCard(id) {
++  const { col, card } = find(id);
++  editing = id;
++  form.col.replaceChildren(...S.columns.map(c => h('option', { value: c.id, selected: c === col }, c.title)));
++  form.title.value = card.title; form.notes.value = card.notes;
++  form.priority.value = card.priority; form.due.value = card.due;
++  form.tags.value = card.tags.join(', ');
++  dlg.showModal();
++  form.title.focus();
++}
++form.addEventListener('submit', () => {
++  const { col, card } = find(editing);
++  Object.assign(card, {
++    title: form.title.value.trim(), notes: form.notes.value, priority: form.priority.value, due: form.due.value,
++    tags: form.tags.value.split(',').map(t => t.trim().replace(/^#/, '')).filter(Boolean),
++  });
++  if (form.col.value !== col.id) move(editing, form.col.value); else save();
++});
++$('#cancel').onclick = () => dlg.close();
++$('#del').onclick = () => {
++  const { col, card } = find(editing);
++  dlg.close();
++  destructive(() => col.cards.splice(col.cards.indexOf(card), 1), `Deleted "${card.title}"`);
++};
++dlg.addEventListener('click', e => e.target === dlg && dlg.close()); // backdrop click
++
++// Header: search, backup, shortcuts
++$('#q').oninput = e => { query = e.target.value.trim(); render(); };
++document.addEventListener('keydown', e => {
++  if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); $('#q').focus(); }
++});
++$('#export').onclick = () => {
++  const a = h('a', { href: URL.createObjectURL(new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' })), download: `board-${today()}.json` });
++  a.click(); URL.revokeObjectURL(a.href);
++};
++$('#import').onclick = () => $('#file').click();
++$('#file').onchange = async e => {
++  const f = e.target.files[0]; e.target.value = '';
++  if (!f) return;
++  try {
++    const next = clean(JSON.parse(await f.text()));
++    if (confirm('Replace the current board with this file?')) destructive(() => S = next, 'Board imported');
++  } catch { alert('Not a valid board file.'); }
++};
++window.addEventListener('storage', e => { if (e.key === KEY) { S = load(); render(); } }); // other tab edited
++
++render();
+diff --git a/board/index.html b/board/index.html
+new file mode 100644
+index 0000000..ea9f098
+--- /dev/null
++++ b/board/index.html
+@@ -0,0 +1,49 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<title>Board</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<header>
++  <h1>Board</h1>
++  <input id="q" type="search" placeholder="Search cards  ( / )" aria-label="Search cards">
++  <button id="export" title="Download a JSON backup">Export</button>
++  <button id="import" title="Replace the board from a JSON backup">Import</button>
++  <input id="file" type="file" accept="application/json" hidden>
++</header>
++
++<main id="board"></main>
++
++<dialog id="dlg">
++  <form id="form" method="dialog">
++    <label>Title <input name="title" required maxlength="200"></label>
++    <label>Notes <textarea name="notes" rows="5"></textarea></label>
++    <div class="row">
++      <label>Priority
++        <select name="priority">
++          <option value="">None</option><option value="low">Low</option>
++          <option value="med">Medium</option><option value="high">High</option>
++        </select>
++      </label>
++      <label>Due <input name="due" type="date"></label>
++    </div>
++    <div class="row">
++      <label>Column <select name="col"></select></label>
++      <label>Tags <input name="tags" placeholder="work, home"></label>
++    </div>
++    <div class="actions">
++      <button type="button" id="del" class="danger">Delete</button>
++      <span></span>
++      <button type="button" id="cancel">Cancel</button>
++      <button class="primary">Save</button>
++    </div>
++  </form>
++</dialog>
++
++<div id="toast" hidden><span></span><button>Undo</button></div>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/board/style.css b/board/style.css
+new file mode 100644
+index 0000000..639691c
+--- /dev/null
++++ b/board/style.css
+@@ -0,0 +1,41 @@
++:root{--bg:#f4f5f7;--col:#e8eaee;--card:#fff;--fg:#1d2330;--mute:#6b7385;--line:#d5d9e0;--accent:#3b6cf6;--red:#d6383a;--amber:#b7791f;--low:#3aa56b;--med:#e0a100;--high:#d6383a}
++@media (prefers-color-scheme:dark){:root{--bg:#14171d;--col:#1d2129;--card:#272c36;--fg:#e6e9ef;--mute:#98a0b0;--line:#3a404d;--accent:#6f93ff;--red:#ff6b6d;--amber:#f0b44c}}
++*{box-sizing:border-box}
++html,body{height:100%;margin:0}
++body{display:flex;flex-direction:column;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,sans-serif}
++header{display:flex;gap:8px;align-items:center;padding:10px 16px}
++h1{font-size:18px;margin:0 auto 0 0}
++input,textarea,select,button{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
++button{cursor:pointer}
++button:hover{border-color:var(--accent)}
++button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
++button.danger{color:var(--red)}
++:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
++#q{width:240px}
++#board{flex:1;display:flex;gap:12px;align-items:flex-start;overflow-x:auto;padding:4px 16px 16px}
++.col{flex:0 0 280px;max-height:100%;display:flex;flex-direction:column;background:var(--col);border-radius:10px;padding:8px}
++.col>header{padding:0 0 8px;gap:4px}
++.col .name{flex:1;min-width:0;font-weight:600;background:none;border-color:transparent;padding:4px}
++.col .name:hover,.col .name:focus{border-color:var(--line);background:var(--card)}
++.count{color:var(--mute);font-size:12px}
++.x{border:0;background:none;color:var(--mute);padding:2px 6px}
++.list{flex:1;min-height:40px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:2px}
++.card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--line);border-radius:6px;padding:8px;cursor:grab}
++.card[data-p=low]{border-left-color:var(--low)}.card[data-p=med]{border-left-color:var(--med)}.card[data-p=high]{border-left-color:var(--high)}
++.card.dragging{opacity:.4}
++.card .t{overflow-wrap:anywhere}
++.meta{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;font-size:12px;color:var(--mute)}
++.chip{border:1px solid var(--line);border-radius:10px;padding:0 6px}
++.chip.over{color:var(--red);border-color:var(--red)}.chip.today{color:var(--amber);border-color:var(--amber)}
++.add{margin-top:8px;width:100%}
++.newcol{flex:0 0 280px}
++dialog{border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);width:min(460px,92vw);padding:16px}
++dialog::backdrop{background:#0006}
++form{display:flex;flex-direction:column;gap:10px}
++label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--mute);flex:1}
++label>*{font-size:14px;color:var(--fg)}
++.row{display:flex;gap:10px}
++.actions{display:flex;gap:8px}.actions span{flex:1}
++#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);display:flex;gap:12px;align-items:center;background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px}
++#toast[hidden]{display:none}
++#toast button{background:none;color:inherit;border-color:currentColor}

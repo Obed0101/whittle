@@ -1,0 +1,567 @@
+diff --git a/notes/app.js b/notes/app.js
+new file mode 100644
+index 0000000..96bd5fc
+--- /dev/null
++++ b/notes/app.js
+@@ -0,0 +1,372 @@
++(() => {
++'use strict';
++const KEY = 'notes.v1', VERSION = 1, TRASH_DAYS = 30;
++const $ = id => document.getElementById(id);
++const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
++
++let db, state = { id: null, view: 'all', tag: null, q: '', preview: false };
++let saveTimer, listTimer, toastTimer, storageOk = true;
++
++const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
++const fresh = () => ({ version: VERSION, notes: [], settings: { theme: 'system', sort: 'updated' } });
++
++function normalize(d) {
++  const base = fresh();
++  if (!d || typeof d !== 'object' || !Array.isArray(d.notes)) return base;
++  base.settings = Object.assign(base.settings, d.settings || {});
++  base.notes = d.notes.filter(n => n && typeof n === 'object').map(n => ({
++    id: String(n.id || uid()), title: String(n.title || ''), body: String(n.body || ''),
++    tags: Array.isArray(n.tags) ? [...new Set(n.tags.map(cleanTag).filter(Boolean))] : [],
++    pinned: !!n.pinned, created: +n.created || Date.now(), updated: +n.updated || +n.created || Date.now(),
++    deleted: n.deleted ? +n.deleted || Date.now() : null,
++  }));
++  return base;
++}
++
++function load() {
++  let raw = null;
++  try { raw = localStorage.getItem(KEY); } catch (e) { storageOk = false; banner('Browser storage is unavailable; notes will be lost when you close this tab. Use Export backup.'); }
++  if (!raw) return fresh();
++  try { return normalize(JSON.parse(raw)); }
++  catch (e) {
++    try { localStorage.setItem(KEY + '.corrupt', raw); } catch (_) {}
++    banner('Saved data could not be read. A copy was kept under "' + KEY + '.corrupt"; starting empty.');
++    return fresh();
++  }
++}
++
++function save() {
++  clearTimeout(saveTimer); saveTimer = null;
++  try { localStorage.setItem(KEY, JSON.stringify(db)); storageOk = true; $('banner').hidden = true; $('saved').textContent = 'Saved'; }
++  catch (e) { storageOk = false; banner('Could not save (storage full or blocked). Export a backup now so nothing is lost.'); $('saved').textContent = 'Not saved'; }
++}
++function scheduleSave() { $('saved').textContent = 'Saving…'; clearTimeout(saveTimer); saveTimer = setTimeout(save, 300); }
++function banner(msg) { $('banner').textContent = msg; $('banner').hidden = false; }
++
++const note = id => db.notes.find(n => n.id === id);
++const cleanTag = t => String(t).trim().replace(/^#+/, '').replace(/[,\s]+/g, '-').toLowerCase().slice(0, 40);
++
++function toast(msg, action, fn) {
++  clearTimeout(toastTimer);
++  $('toasttext').textContent = msg;
++  const b = $('toastbtn');
++  b.hidden = !action; b.textContent = action || '';
++  b.onclick = () => { $('toast').hidden = true; fn && fn(); };
++  $('toast').hidden = false;
++  toastTimer = setTimeout(() => ($('toast').hidden = true), 6000);
++}
++
++function fmt(ts) {
++  const d = new Date(ts), now = new Date();
++  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
++  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
++}
++
++/* ---------- markdown ---------- */
++const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
++function inline(t) {
++  const codes = [];
++  t = esc(t).replace(/`([^`]+)`/g, (m, c) => '\0' + (codes.push(c) - 1) + '\0');
++  t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
++    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>')
++    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>').replace(/~~(.+?)~~/g, '<del>$1</del>');
++  return t.replace(/\0(\d+)\0/g, (m, i) => '<code>' + codes[i] + '</code>');
++}
++const LIST = /^(\s*)([-*+]|\d+\.)\s+(.*)$/;
++function md(src, tasks = true) {
++  const L = src.split('\n'), out = [];
++  const starts = l => /^(#{1,6}\s|```|>\s?|\s*([-*_])(\s*\2){2,}\s*$)/.test(l) || LIST.test(l);
++  for (let i = 0; i < L.length;) {
++    const l = L[i];
++    if (!l.trim()) { i++; continue; }
++    if (l.startsWith('```')) {
++      const buf = []; i++;
++      while (i < L.length && !L[i].startsWith('```')) buf.push(L[i++]);
++      i++; out.push('<pre><code>' + esc(buf.join('\n')) + '</code></pre>'); continue;
++    }
++    let m;
++    if ((m = /^(#{1,6})\s+(.*)/.exec(l))) { const n = Math.min(m[1].length, 3); out.push(`<h${n}>${inline(m[2])}</h${n}>`); i++; continue; }
++    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(l)) { out.push('<hr>'); i++; continue; }
++    if (/^>\s?/.test(l)) {
++      const buf = [];
++      while (i < L.length && /^>\s?/.test(L[i])) buf.push(L[i++].replace(/^>\s?/, ''));
++      out.push('<blockquote>' + md(buf.join('\n'), false) + '</blockquote>'); continue;
++    }
++    if (LIST.test(l)) {
++      const ordered = /\d/.test(LIST.exec(l)[2]), items = [];
++      while (i < L.length && (m = LIST.exec(L[i]))) {
++        let text = m[3], cls = '', box = '', t;
++        if ((t = /^\[( |x|X)\]\s+(.*)/.exec(text))) {
++          const done = t[1] !== ' ';
++          box = `<input type="checkbox" data-line="${i}"${done ? ' checked' : ''}${tasks ? '' : ' disabled'} aria-label="Toggle task"> `;
++          text = t[2]; cls = ' class="task' + (done ? ' done' : '') + '"';
++        }
++        items.push(`<li${cls} style="margin-left:${Math.floor(m[1].replace(/\t/g, '  ').length / 2) * 1.2}em">${box}<span>${inline(text)}</span></li>`);
++        i++;
++      }
++      out.push((ordered ? '<ol>' : '<ul>') + items.join('') + (ordered ? '</ol>' : '</ul>')); continue;
++    }
++    const buf = [];
++    while (i < L.length && L[i].trim() && (!buf.length || !starts(L[i]))) buf.push(inline(L[i++]));
++    out.push('<p>' + buf.join('<br>') + '</p>');
++  }
++  return out.join('\n');
++}
++
++/* ---------- list / nav ---------- */
++const live = () => db.notes.filter(n => !n.deleted);
++function visible() {
++  const q = state.q.trim().toLowerCase();
++  let r = db.notes.filter(n => (state.view === 'trash') === !!n.deleted);
++  if (state.view === 'tag') r = r.filter(n => n.tags.includes(state.tag));
++  if (state.view === 'pinned') r = r.filter(n => n.pinned);
++  if (q) r = r.filter(n => (n.title + '\n' + n.body + '\n' + n.tags.join(' ')).toLowerCase().includes(q));
++  const s = db.settings.sort;
++  return r.sort((a, b) => (b.pinned - a.pinned) || (s === 'title' ? (a.title || '~').localeCompare(b.title || '~') : b[s] - a[s]));
++}
++
++function renderNav() {
++  const v = $('views'); v.textContent = '';
++  const add = (parent, label, count, cur, fn) => {
++    const b = el('button', { type: 'button', className: 'navbtn', onclick: () => { fn(); closeNav(); } }, el('span', {}, label), el('span', {}, String(count)));
++    if (cur) b.setAttribute('aria-current', 'true'); parent.append(b);
++  };
++  add(v, 'All notes', live().length, state.view === 'all', () => setView('all'));
++  add(v, 'Pinned', live().filter(n => n.pinned).length, state.view === 'pinned', () => setView('pinned'));
++  add(v, 'Trash', db.notes.length - live().length, state.view === 'trash', () => setView('trash'));
++  const counts = {};
++  live().forEach(n => n.tags.forEach(t => (counts[t] = (counts[t] || 0) + 1)));
++  const t = $('tags'); t.textContent = '';
++  const names = Object.keys(counts).sort();
++  if (!names.length) t.append(el('span', { className: 'navbtn' }, el('span', {}, 'No tags yet')));
++  names.forEach(n => add(t, '#' + n, counts[n], state.view === 'tag' && state.tag === n, () => setView('tag', n)));
++  $('taglist').textContent = '';
++  names.forEach(n => $('taglist').append(el('option', { value: n })));
++}
++
++function renderList() {
++  const items = visible(), ul = $('list');
++  ul.textContent = '';
++  $('heading').textContent = { all: 'All notes', pinned: 'Pinned', trash: 'Trash', tag: '#' + state.tag }[state.view] + ' · ' + items.length;
++  $('emptytrash').hidden = !(state.view === 'trash' && items.length);
++  const e = $('empty');
++  e.hidden = !!items.length;
++  e.textContent = state.q ? 'No notes match your search.' : { all: 'No notes yet. Press New to write your first one.', pinned: 'No pinned notes.', trash: 'Trash is empty. Deleted notes stay here for ' + TRASH_DAYS + ' days.', tag: 'No notes with this tag.' }[state.view];
++  for (const n of items) {
++    const ex = n.body.replace(/\s+/g, ' ').trim().slice(0, 120);
++    const b = el('button', { type: 'button', className: 'item', onclick: () => openNote(n.id) },
++      el('b', {}, (n.pinned ? '📌 ' : '') + (n.title || 'Untitled')),
++      el('span', { className: 'ex' }, ex || 'No content'),
++      el('span', { className: 'meta' }, fmt(n.updated) + '  ', ...n.tags.map(t => el('span', { className: 'tag' }, t))));
++    if (n.id === state.id) b.setAttribute('aria-current', 'true');
++    ul.append(el('li', {}, b));
++  }
++}
++const refreshList = () => { renderNav(); renderList(); };
++function refreshListSoon() { clearTimeout(listTimer); listTimer = setTimeout(refreshList, 250); }
++
++function setView(view, tag = null) {
++  state.view = view; state.tag = tag;
++  if (state.id && !visible().some(n => n.id === state.id)) closeNote();
++  refreshList();
++  document.body.dataset.view = 'list';
++}
++
++/* ---------- editor ---------- */
++function purgeIfEmpty() {
++  const n = state.id && note(state.id);
++  if (n && !n.title.trim() && !n.body.trim() && !n.tags.length) { db.notes = db.notes.filter(x => x !== n); save(); }
++}
++
++function closeNote() { purgeIfEmpty(); state.id = null; fillEditor(); }
++
++function openNote(id) {
++  if (state.id !== id) purgeIfEmpty();
++  state.id = id; state.preview = false;
++  fillEditor(); refreshList();
++  document.body.dataset.view = 'editor';
++}
++
++function renderChips(n) {
++  const c = $('chips'); c.textContent = '';
++  const ro = !!n.deleted;
++  n.tags.forEach(t => c.append(el('span', { className: 'chip' }, '#' + t, ro ? '' : el('button', { type: 'button', 'aria-label': 'Remove tag ' + t, textContent: '×', onclick: () => { n.tags = n.tags.filter(x => x !== t); touch(n); renderChips(n); $('taginput').focus(); } }))));
++}
++
++function stats() {
++  const n = note(state.id); if (!n) return;
++  const w = (n.body.trim().match(/\S+/g) || []).length;
++  $('stats').textContent = `${w} word${w === 1 ? '' : 's'} · ${n.body.length} chars · edited ${fmt(n.updated)}`;
++}
++
++function fillEditor() {
++  const n = state.id && note(state.id);
++  $('none').hidden = !!n; $('form').hidden = !n;
++  if (!n) return;
++  const ro = !!n.deleted;
++  $('title').value = n.title; $('body').value = n.body;
++  $('title').readOnly = $('body').readOnly = ro;
++  $('taginput').hidden = ro;
++  $('pin').hidden = $('del').hidden = ro;
++  $('restore').hidden = $('purge').hidden = !ro;
++  $('pin').setAttribute('aria-pressed', n.pinned); $('pin').textContent = n.pinned ? 'Unpin' : 'Pin';
++  renderChips(n); stats(); renderMode();
++  $('saved').textContent = '';
++}
++
++function renderMode() {
++  const n = note(state.id); if (!n) return;
++  $('mode').setAttribute('aria-pressed', state.preview);
++  $('mode').textContent = state.preview ? 'Edit' : 'Preview';
++  $('body').hidden = state.preview; $('preview').hidden = !state.preview;
++  if (state.preview) $('preview').innerHTML = md(n.body) || '<p style="color:var(--mute)">Nothing to preview.</p>';
++}
++
++function touch(n) { n.updated = Date.now(); scheduleSave(); refreshListSoon(); stats(); }
++
++function newNote() {
++  purgeIfEmpty();
++  if (state.view === 'trash') state.view = 'all';
++  state.q = ''; $('search').value = '';
++  const n = { id: uid(), title: '', body: '', tags: state.view === 'tag' ? [state.tag] : [], pinned: state.view === 'pinned', created: Date.now(), updated: Date.now(), deleted: null };
++  db.notes.push(n); save();
++  openNote(n.id); $('title').focus();
++}
++
++function trashNote(n) {
++  const items = visible(), idx = items.indexOf(n);
++  n.deleted = Date.now(); save();
++  const next = items[idx + 1] || items[idx - 1];
++  if (next) openNote(next.id); else { state.id = null; fillEditor(); }
++  document.body.dataset.view = 'list';
++  refreshList();
++  toast('Moved to trash', 'Undo', () => { n.deleted = null; save(); refreshList(); });
++}
++
++function restoreNote(n) {
++  n.deleted = null; n.updated = Date.now(); save();
++  closeNote(); refreshList(); document.body.dataset.view = 'list';
++  toast('Note restored', 'Undo', () => { n.deleted = Date.now(); save(); refreshList(); });
++}
++
++function purgeNotes(list, msg) {
++  if (!confirm(msg)) return;
++  db.notes = db.notes.filter(n => !list.includes(n)); save();
++  if (!note(state.id)) { state.id = null; fillEditor(); document.body.dataset.view = 'list'; }
++  refreshList();
++}
++
++function download(name, text, type) {
++  const a = el('a', { href: URL.createObjectURL(new Blob([text], { type })), download: name });
++  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
++}
++const slug = s => (s.trim().replace(/[^\w\- ]+/g, '').replace(/\s+/g, '-').slice(0, 50) || 'note');
++
++function importFile(file) {
++  const r = new FileReader();
++  r.onerror = () => toast('Could not read that file');
++  r.onload = () => {
++    let d;
++    try { d = JSON.parse(r.result); if (!d || !Array.isArray(d.notes)) throw 0; } catch (e) { toast('That file is not a Notes backup'); return; }
++    if (d.version > VERSION) { toast('Backup is from a newer version of Notes'); return; }
++    const inc = normalize(d).notes; let added = 0, updated = 0;
++    for (const n of inc) {
++      const cur = note(n.id);
++      if (!cur) { db.notes.push(n); added++; } else if (n.updated > cur.updated) { Object.assign(cur, n); updated++; }
++    }
++    save(); fillEditor(); refreshList();
++    toast(`Imported ${added} new, ${updated} updated`);
++  };
++  r.readAsText(file);
++}
++
++function addTag(n, raw) {
++  const t = cleanTag(raw);
++  if (t && !n.tags.includes(t)) { n.tags.push(t); touch(n); renderChips(n); }
++  $('taginput').value = '';
++}
++
++function closeNav() { document.body.classList.remove('nav-open'); }
++const typing = e => /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
++
++/* ---------- wiring ---------- */
++function init() {
++  db = load();
++  const cutoff = Date.now() - TRASH_DAYS * 864e5;
++  const keep = db.notes.filter(n => !n.deleted || n.deleted > cutoff);
++  if (keep.length !== db.notes.length) { db.notes = keep; save(); }
++  applyTheme(); $('sort').value = db.settings.sort;
++  refreshList(); fillEditor();
++
++  $('new').onclick = $('new2').onclick = newNote;
++  $('menu').onclick = () => document.body.classList.add('nav-open');
++  $('scrim').onclick = closeNav;
++  $('back').onclick = () => { document.body.dataset.view = 'list'; };
++  $('search').oninput = e => { state.q = e.target.value; renderList(); };
++  $('sort').onchange = e => { db.settings.sort = e.target.value; save(); renderList(); };
++  $('theme').value = db.settings.theme;
++  $('theme').onchange = e => { db.settings.theme = e.target.value; save(); applyTheme(); };
++  $('title').oninput = e => { const n = note(state.id); if (n && !n.deleted) { n.title = e.target.value; touch(n); } };
++  $('body').oninput = e => { const n = note(state.id); if (n && !n.deleted) { n.body = e.target.value; touch(n); } };
++  $('mode').onclick = () => { state.preview = !state.preview; renderMode(); };
++  $('pin').onclick = () => { const n = note(state.id); n.pinned = !n.pinned; touch(n); fillEditor(); refreshList(); };
++  $('del').onclick = () => trashNote(note(state.id));
++  $('restore').onclick = () => restoreNote(note(state.id));
++  $('purge').onclick = () => purgeNotes([note(state.id)], 'Permanently delete this note? This cannot be undone.');
++  $('emptytrash').onclick = () => purgeNotes(db.notes.filter(n => n.deleted), 'Permanently delete everything in the trash?');
++  $('dl').onclick = () => { const n = note(state.id); download(slug(n.title) + '.md', (n.title ? '# ' + n.title + '\n\n' : '') + n.body + '\n', 'text/markdown'); };
++  $('export').onclick = () => { save(); download('notes-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(db, null, 2), 'application/json'); };
++  $('import').onclick = () => $('file').click();
++  $('file').onchange = e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ''; };
++  $('help').onclick = () => { closeNav(); $('helpdlg').showModal(); };
++  $('preview').onclick = e => {
++    const c = e.target.closest('input[type=checkbox][data-line]'); if (!c) return;
++    const n = note(state.id); if (!n || n.deleted) { e.preventDefault(); return; }
++    const lines = n.body.split('\n'), i = +c.dataset.line;
++    lines[i] = lines[i].replace(/\[( |x|X)\]/, c.checked ? '[x]' : '[ ]');
++    n.body = lines.join('\n'); $('body').value = n.body; touch(n); renderMode();
++  };
++  $('taginput').onkeydown = e => {
++    const n = note(state.id);
++    if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag(n, e.target.value); }
++    else if (e.key === 'Backspace' && !e.target.value && n.tags.length) { n.tags.pop(); touch(n); renderChips(n); }
++  };
++  $('taginput').onchange = e => { const n = note(state.id); if (n && e.target.value) addTag(n, e.target.value); };
++  $('list').onkeydown = e => {
++    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
++    const bs = [...document.querySelectorAll('.item')], i = bs.indexOf(document.activeElement);
++    const t = bs[i + (e.key === 'ArrowDown' ? 1 : -1)];
++    if (t) { e.preventDefault(); t.focus(); }
++  };
++
++  document.addEventListener('keydown', e => {
++    const mod = e.metaKey || e.ctrlKey;
++    if (e.altKey && e.code === 'KeyN') { e.preventDefault(); newNote(); }
++    else if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); document.body.dataset.view = 'list'; $('search').focus(); $('search').select(); }
++    else if (mod && e.key.toLowerCase() === 'e' && state.id) { e.preventDefault(); state.preview = !state.preview; renderMode(); }
++    else if (e.key === '/' && !typing(e) && !mod) { e.preventDefault(); $('search').focus(); }
++    else if (e.key === '?' && !typing(e)) { $('helpdlg').showModal(); }
++    else if (e.key === 'Escape' && !$('helpdlg').open) {
++      if (document.body.classList.contains('nav-open')) closeNav();
++      else if (state.q) { state.q = ''; $('search').value = ''; renderList(); }
++      else document.body.dataset.view = 'list';
++    }
++  });
++
++  window.addEventListener('beforeunload', () => { if (saveTimer) save(); purgeIfEmpty(); });
++  window.addEventListener('storage', e => {
++    if (e.key !== KEY) return;
++    db = load(); applyTheme();
++    if (state.id && !note(state.id)) state.id = null;
++    fillEditor(); refreshList();
++  });
++  if (matchMedia('(max-width:700px)').matches) document.body.dataset.view = 'list';
++}
++
++function applyTheme() {
++  const t = db.settings.theme;
++  if (t === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.dataset.theme = t;
++}
++
++init();
++})();
+diff --git a/notes/index.html b/notes/index.html
+new file mode 100644
+index 0000000..e5a878a
+--- /dev/null
++++ b/notes/index.html
+@@ -0,0 +1,90 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="color-scheme" content="light dark">
++<title>Notes</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body data-view="list">
++<a class="skip" href="#list">Skip to notes list</a>
++<div id="banner" role="alert" hidden></div>
++<div id="app">
++  <nav id="nav" aria-label="Library">
++    <h1>Notes</h1>
++    <div id="views"></div>
++    <h2>Tags</h2>
++    <div id="tags"></div>
++    <div class="navfoot">
++      <label>Theme
++        <select id="theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
++      </label>
++      <button id="export" type="button">Export backup</button>
++      <button id="import" type="button">Import backup</button>
++      <button id="help" type="button">Keyboard shortcuts</button>
++      <input id="file" type="file" accept="application/json,.json" hidden>
++    </div>
++  </nav>
++  <div id="scrim"></div>
++
++  <section id="listpane" aria-label="Note list">
++    <div class="bar">
++      <button id="menu" type="button" class="icon" aria-label="Open library menu">☰</button>
++      <input id="search" type="search" placeholder="Search notes  ( / )" aria-label="Search notes" autocomplete="off">
++      <button id="new" type="button" class="primary">New</button>
++    </div>
++    <div class="bar sub">
++      <strong id="heading"></strong>
++      <button id="emptytrash" type="button" hidden>Empty trash</button>
++      <label>Sort
++        <select id="sort"><option value="updated">Last edited</option><option value="created">Created</option><option value="title">Title</option></select>
++      </label>
++    </div>
++    <ul id="list"></ul>
++    <p id="empty" hidden></p>
++  </section>
++
++  <main id="editor">
++    <div id="none"><p>Select a note, or create a new one.</p><button id="new2" type="button" class="primary">New note</button></div>
++    <div id="form" hidden>
++      <div class="bar">
++        <button id="back" type="button" class="icon" aria-label="Back to list">←</button>
++        <input id="title" type="text" placeholder="Title" aria-label="Title" autocomplete="off">
++      </div>
++      <div class="bar tools" role="toolbar" aria-label="Note actions">
++        <button id="mode" type="button" aria-pressed="false">Preview</button>
++        <button id="pin" type="button" aria-pressed="false">Pin</button>
++        <button id="dl" type="button">Download .md</button>
++        <button id="del" type="button">Delete</button>
++        <button id="restore" type="button" hidden>Restore</button>
++        <button id="purge" type="button" hidden>Delete forever</button>
++      </div>
++      <div id="tagbox">
++        <span id="chips"></span>
++        <input id="taginput" type="text" list="taglist" placeholder="Add tag…" aria-label="Add tag" autocomplete="off">
++        <datalist id="taglist"></datalist>
++      </div>
++      <textarea id="body" placeholder="Write something… Markdown supported (# headings, **bold**, - [ ] tasks, `code`)." aria-label="Note body" spellcheck="true"></textarea>
++      <div id="preview" tabindex="0" aria-label="Preview" hidden></div>
++      <div id="status"><span id="stats"></span><span id="saved"></span></div>
++    </div>
++  </main>
++</div>
++<div id="toast" role="status" aria-live="polite" hidden><span id="toasttext"></span><button id="toastbtn" type="button" hidden></button></div>
++<dialog id="helpdlg" aria-labelledby="helptitle">
++  <h2 id="helptitle">Keyboard shortcuts</h2>
++  <dl>
++    <dt><kbd>Alt</kbd>+<kbd>N</kbd></dt><dd>New note</dd>
++    <dt><kbd>/</kbd> or <kbd>Ctrl/⌘</kbd>+<kbd>K</kbd></dt><dd>Search</dd>
++    <dt><kbd>Ctrl/⌘</kbd>+<kbd>E</kbd></dt><dd>Toggle edit / preview</dd>
++    <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move through the note list</dd>
++    <dt><kbd>Esc</kbd></dt><dd>Clear search / back to list</dd>
++    <dt><kbd>?</kbd></dt><dd>This help</dd>
++  </dl>
++  <p>Notes are saved automatically in this browser. Use “Export backup” regularly.</p>
++  <form method="dialog"><button class="primary">Close</button></form>
++</dialog>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/notes/style.css b/notes/style.css
+new file mode 100644
+index 0000000..232a18b
+--- /dev/null
++++ b/notes/style.css
+@@ -0,0 +1,87 @@
++:root{--bg:#fff;--panel:#f6f6f4;--fg:#1c1c1a;--mute:#6b6b66;--line:#e1e1dc;--acc:#2f6fed;--accfg:#fff;--sel:#e6edfc;--danger:#c62828}
++@media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#17181a;--panel:#1e2022;--fg:#e8e8e4;--mute:#9a9a94;--line:#2f3134;--acc:#6b9bff;--accfg:#0b1020;--sel:#262e44;--danger:#ef6b6b}}
++:root[data-theme=dark]{--bg:#17181a;--panel:#1e2022;--fg:#e8e8e4;--mute:#9a9a94;--line:#2f3134;--acc:#6b9bff;--accfg:#0b1020;--sel:#262e44;--danger:#ef6b6b}
++*{box-sizing:border-box}
++html,body{height:100%;margin:0}
++body{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column}
++button,input,select,textarea{font:inherit;color:inherit}
++button{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer}
++button:hover{border-color:var(--acc)}
++button.primary{background:var(--acc);color:var(--accfg);border-color:var(--acc)}
++button[aria-pressed=true]{background:var(--sel);border-color:var(--acc)}
++button.icon{display:none}
++:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
++input,select,textarea{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
++.skip{position:absolute;left:-999px}.skip:focus{left:8px;top:8px;z-index:20;background:var(--bg);padding:6px}
++#banner{background:var(--danger);color:#fff;padding:8px 12px}
++#app{flex:1;min-height:0;display:grid;grid-template-columns:210px 300px 1fr}
++#nav{background:var(--panel);border-right:1px solid var(--line);padding:14px 10px;overflow:auto;display:flex;flex-direction:column;gap:2px}
++#nav h1{font-size:18px;margin:0 6px 10px}
++#nav h2{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:14px 6px 4px}
++#views,#tags{display:flex;flex-direction:column}
++.navbtn{display:flex;justify-content:space-between;gap:6px;text-align:left;border:0;background:none;padding:6px;border-radius:6px;overflow-wrap:anywhere}
++.navbtn[aria-current=true]{background:var(--sel);font-weight:600}
++.navbtn span:last-child{color:var(--mute)}
++.navfoot{margin-top:auto;padding-top:14px;display:flex;flex-direction:column;gap:6px}
++.navfoot label{display:flex;justify-content:space-between;align-items:center;gap:6px;color:var(--mute)}
++#scrim{display:none}
++#listpane{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;min-width:0}
++.bar{display:flex;gap:6px;align-items:center;padding:8px 10px}
++.bar input[type=search],.bar #title{flex:1;min-width:0}
++.bar.sub{padding:2px 10px 6px;color:var(--mute);font-size:13px;border-bottom:1px solid var(--line)}
++.bar.sub strong{flex:1;color:var(--fg)}
++.bar.sub select{padding:1px 4px;font-size:13px}
++#title{font-size:18px;font-weight:600;border:0;background:none;padding:4px 0}
++#list{list-style:none;margin:0;padding:0;overflow:auto;flex:1}
++.item{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);border-radius:0;background:none;padding:10px 12px}
++.item[aria-current=true]{background:var(--sel)}
++.item b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.item .ex{display:block;color:var(--mute);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.item .meta{display:block;color:var(--mute);font-size:12px}
++.tag{display:inline-block;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:0 7px;font-size:12px;margin-right:4px}
++#empty,#none{color:var(--mute);text-align:center;padding:30px 16px}
++#editor{min-width:0;min-height:0;display:flex;flex-direction:column}
++#none{margin:auto}
++#form{display:flex;flex-direction:column;flex:1;min-height:0}
++.tools{flex-wrap:wrap;padding-top:0}
++#tagbox{display:flex;flex-wrap:wrap;gap:4px;align-items:center;padding:0 10px 8px;border-bottom:1px solid var(--line)}
++#chips{display:contents}
++.chip{display:inline-flex;align-items:center;background:var(--sel);border-radius:10px;padding:0 4px 0 8px;font-size:13px}
++.chip button{border:0;background:none;padding:0 4px}
++#taginput{border:0;background:none;flex:1;min-width:90px}
++#body,#preview{flex:1;min-height:0;overflow:auto;padding:14px 16px;border:0;border-radius:0;resize:none;width:100%}
++#body{font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
++#body:focus-visible{outline:0}
++#status{display:flex;justify-content:space-between;color:var(--mute);font-size:12px;padding:4px 12px;border-top:1px solid var(--line)}
++#preview{max-width:760px}
++#preview h1,#preview h2,#preview h3{margin:.8em 0 .3em;line-height:1.25}
++#preview p,#preview ul,#preview ol,#preview blockquote,#preview pre{margin:.5em 0}
++#preview pre,#preview code{background:var(--panel);border-radius:4px;font-family:ui-monospace,Menlo,monospace}
++#preview code{padding:0 4px}#preview pre{padding:10px;overflow:auto}#preview pre code{padding:0}
++#preview blockquote{border-left:3px solid var(--line);padding-left:12px;color:var(--mute)}
++#preview a{color:var(--acc)}
++#preview hr{border:0;border-top:1px solid var(--line)}
++#preview ul,#preview ol{padding-left:1.4em}
++#preview li.task{list-style:none;margin-left:-1.2em}
++#preview li.task.done span{text-decoration:line-through;color:var(--mute)}
++#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;display:flex;gap:12px;align-items:center;z-index:30;max-width:90vw}
++#toast button{background:none;border-color:currentColor;color:inherit}
++dialog{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:10px;max-width:420px}
++dialog::backdrop{background:#0006}
++dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px}dd{margin:0}
++kbd{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:12px}
++@media(max-width:900px){#app{grid-template-columns:260px 1fr}#nav{display:none}}
++@media(max-width:700px){
++  #app{display:block;position:relative}
++  button.icon{display:inline-block}
++  #listpane,#editor{position:absolute;inset:0;background:var(--bg)}
++  body[data-view=list] #editor{display:none}
++  body[data-view=editor] #listpane{display:none}
++  #nav{display:flex;position:fixed;z-index:15;top:0;bottom:0;left:0;width:240px;transform:translateX(-100%);transition:transform .2s}
++  body.nav-open #nav{transform:none}
++  body.nav-open #scrim{display:block;position:fixed;inset:0;background:#0006;z-index:10}
++  input,select,textarea{font-size:16px}
++  .navbtn,button{min-height:40px}
++}
++@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
++@media print{#nav,#listpane,.bar,#tagbox,#status{display:none}#app{display:block}}

@@ -1,0 +1,486 @@
+diff --git a/board/app.js b/board/app.js
+new file mode 100644
+index 0000000..527e78e
+--- /dev/null
++++ b/board/app.js
+@@ -0,0 +1,376 @@
++'use strict';
++const KEY = 'kanban.v1', VERSION = 1;
++const $ = s => document.querySelector(s);
++const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
++const PRIO = ['None', 'Low', 'Medium', 'High'];
++
++function h(tag, props = {}, ...kids) {
++  const e = document.createElement(tag);
++  for (const [k, v] of Object.entries(props)) {
++    if (v == null || v === false) continue;
++    if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
++    else if (k === 'class') e.className = v;
++    else if (k === 'text') e.textContent = v;
++    else e.setAttribute(k, v === true ? '' : v);
++  }
++  for (const c of kids.flat()) if (c != null) e.append(c);
++  return e;
++}
++
++/* ---------- data ---------- */
++const newBoard = (name, starter) => ({
++  id: uid(), name,
++  columns: starter ? ['To do', 'Doing', 'Done'].map(n => ({ id: uid(), name: n, wip: 0, cards: [] })) : [],
++  archive: []
++});
++
++function normalize(d) {
++  if (!d || typeof d !== 'object' || !Array.isArray(d.boards)) throw Error('This is not a board backup.');
++  if (d.version > VERSION) throw Error('This data comes from a newer version of the app.');
++  const s = x => typeof x === 'string' ? x : '';
++  const arr = x => Array.isArray(x) ? x.filter(i => i && typeof i === 'object') : [];
++  const card = c => ({
++    id: s(c.id) || uid(), title: s(c.title) || 'Untitled', desc: s(c.desc),
++    tags: (Array.isArray(c.tags) ? c.tags : []).map(s).filter(Boolean),
++    due: /^\d{4}-\d\d-\d\d$/.test(c.due) ? c.due : '',
++    prio: [0, 1, 2, 3].includes(c.prio) ? c.prio : 0,
++    list: arr(c.list).map(i => ({ t: s(i.t), d: !!i.d })),
++    created: +c.created || Date.now(), from: s(c.from)
++  });
++  const boards = arr(d.boards).map(b => ({
++    id: s(b.id) || uid(), name: s(b.name) || 'Board',
++    columns: arr(b.columns).map(c => ({ id: s(c.id) || uid(), name: s(c.name) || 'Column', wip: Math.max(0, +c.wip | 0), cards: arr(c.cards).map(card) })),
++    archive: arr(b.archive).map(card)
++  }));
++  if (!boards.length) boards.push(newBoard('My board', true));
++  return { version: VERSION, theme: ['light', 'dark'].includes(d.theme) ? d.theme : 'auto', current: boards.some(b => b.id === d.current) ? d.current : boards[0].id, boards };
++}
++
++let loadProblem = '';
++function load() {
++  let raw = null;
++  try { raw = localStorage.getItem(KEY); } catch { loadProblem = 'Browser storage is blocked, so changes will not be kept. Use Export to save a backup.'; }
++  if (raw) {
++    try { return normalize(JSON.parse(raw)); }
++    catch (e) {
++      try { localStorage.setItem(KEY + '.backup', raw); } catch {}
++      loadProblem = 'Saved data could not be read (' + e.message + '). The original was kept under the key "' + KEY + '.backup" and a fresh board was started.';
++    }
++  }
++  return normalize({ boards: [] });
++}
++
++let S = load();
++let q = '', tagFilter = '';
++let undoStack = [], redoStack = [];
++let focusCard = null, focusAdd = null;
++
++function save() {
++  try { localStorage.setItem(KEY, JSON.stringify(S)); $('#banner').hidden = !loadProblem; }
++  catch { banner('Could not save: storage is full or blocked. Use Export to keep a backup.'); }
++}
++function banner(msg) { const b = $('#banner'); b.textContent = msg; b.hidden = !msg; }
++
++const board = () => S.boards.find(b => b.id === S.current) || S.boards[0];
++const snap = () => JSON.stringify(S.boards);
++
++function commit(msg, fn) {
++  const before = snap();
++  fn();
++  if (snap() === before) return;
++  undoStack.push(before); if (undoStack.length > 100) undoStack.shift();
++  redoStack = [];
++  save(); render();
++  if (msg) toast(msg, true);
++}
++function swap(from, to, msg) {
++  if (!from.length) return;
++  to.push(snap());
++  S.boards = JSON.parse(from.pop());
++  if (!S.boards.some(b => b.id === S.current)) S.current = S.boards[0].id;
++  save(); render(); toast(msg);
++}
++const doUndo = () => swap(undoStack, redoStack, 'Undone');
++const doRedo = () => swap(redoStack, undoStack, 'Redone');
++
++function find(id) {
++  for (const col of board().columns) {
++    const i = col.cards.findIndex(c => c.id === id);
++    if (i >= 0) return { col, i, card: col.cards[i] };
++  }
++}
++function moveCard(id, colId, idx) {
++  commit('', () => {
++    const f = find(id), to = board().columns.find(c => c.id === colId);
++    if (!f || !to) return;
++    f.col.cards.splice(f.i, 1);
++    to.cards.splice(Math.min(Math.max(idx, 0), to.cards.length), 0, f.card);
++    focusCard = id;
++  });
++}
++
++/* ---------- helpers ---------- */
++const hue = t => { let n = 0; for (const ch of t.toLowerCase()) n = (n * 31 + ch.charCodeAt(0)) % 360; return n; };
++const tagEl = t => h('span', { class: 'tag', style: '--h:' + hue(t), text: t });
++const pad = n => String(n).padStart(2, '0');
++const today = () => { const d = new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
++const fmtDate = s => new Date(s + 'T00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
++const allTags = () => [...new Set(board().columns.flatMap(c => c.cards.flatMap(k => k.tags)))].sort();
++const visible = c => (!tagFilter || c.tags.includes(tagFilter)) &&
++  (!q || (c.title + ' ' + c.desc + ' ' + c.tags.join(' ') + ' ' + c.list.map(i => i.t).join(' ')).toLowerCase().includes(q));
++
++let toastTimer;
++function toast(msg, withUndo) {
++  const t = $('#toast');
++  t.replaceChildren(h('span', { text: msg }), withUndo && undoStack.length ? h('button', { onclick: () => { doUndo(); } }, 'Undo') : null);
++  t.hidden = false;
++  clearTimeout(toastTimer);
++  toastTimer = setTimeout(() => t.hidden = true, 5000);
++}
++
++const dlg = $('#dlg');
++function openDialog(title, body, onSubmit) {
++  const f = h('form', { method: 'dialog' }, h('h2', { id: 'dlg-title', text: title }), body);
++  f.addEventListener('submit', e => {
++    const v = e.submitter ? e.submitter.value : 'ok';
++    if (v !== 'cancel' && onSubmit) onSubmit(v);
++  });
++  dlg.replaceChildren(f);
++  dlg.showModal();
++}
++const cancelBtn = () => h('button', { value: 'cancel', formnovalidate: true }, 'Cancel');
++
++function askText(title, label, value, cb) {
++  const input = h('input', { required: true, maxlength: 100, value });
++  openDialog(title, [h('label', {}, label, input), h('div', { class: 'actions' }, h('button', { class: 'primary', value: 'ok' }, 'Save'), cancelBtn())],
++    () => { const v = input.value.trim(); if (v) cb(v); });
++  input.select();
++}
++
++/* ---------- render ---------- */
++function render() {
++  document.documentElement.dataset.theme = S.theme === 'auto' ? '' : S.theme;
++  if (S.theme === 'auto') delete document.documentElement.dataset.theme;
++  $('#theme').textContent = 'Theme: ' + S.theme;
++  $('#boards').replaceChildren(...S.boards.map(b => h('option', { value: b.id, selected: b.id === board().id, text: b.name })));
++  const tags = allTags();
++  if (tagFilter && !tags.includes(tagFilter)) tagFilter = '';
++  $('#tag-filter').replaceChildren(h('option', { value: '', text: 'All tags' }), ...tags.map(t => h('option', { value: t, selected: t === tagFilter, text: t })));
++  $('#undo').disabled = !undoStack.length;
++  $('#redo').disabled = !redoStack.length;
++  document.title = board().name + ' – Kanban';
++  renderBoard();
++}
++
++function renderBoard() {
++  const root = $('#board'), b = board();
++  const scroll = {};
++  root.querySelectorAll('.col').forEach(c => scroll[c.dataset.id] = c.querySelector('.cards').scrollTop);
++  root.replaceChildren();
++  if (!b.columns.length) root.append(h('div', { class: 'board-empty' }, h('p', { text: 'This board has no columns yet.' })));
++  b.columns.forEach((col, ci) => root.append(columnEl(col, ci)));
++  const input = h('input', { placeholder: '+ Add column', 'aria-label': 'New column name', maxlength: 100 });
++  root.append(h('form', { class: 'add-col', onsubmit: e => {
++    e.preventDefault();
++    const n = input.value.trim(); if (!n) return;
++    commit('', () => b.columns.push({ id: uid(), name: n, wip: 0, cards: [] }));
++    $('#board .add-col input').focus();
++  } }, input));
++  root.querySelectorAll('.col').forEach(c => { c.querySelector('.cards').scrollTop = scroll[c.dataset.id] || 0; });
++  if (focusCard) { const el = root.querySelector('.card[data-id="' + focusCard + '"]'); if (el) el.focus(); focusCard = null; }
++  if (focusAdd) { const el = root.querySelector('.col[data-id="' + focusAdd + '"] .add input'); if (el) el.focus(); focusAdd = null; }
++}
++
++function columnEl(col, ci) {
++  const shown = col.cards.filter(visible);
++  const over = col.wip && col.cards.length > col.wip;
++  const list = h('div', { class: 'cards' });
++  if (!shown.length) list.append(h('div', { class: 'empty', text: col.cards.length ? 'No matching cards' : 'No cards yet' }));
++  shown.forEach(c => list.append(cardEl(c)));
++  setupDrop(list, col);
++  const input = h('input', { placeholder: '+ Add card', 'aria-label': 'New card in ' + col.name, maxlength: 200 });
++  const add = h('form', { class: 'add', onsubmit: e => {
++    e.preventDefault();
++    const t = input.value.trim(); if (!t) return;
++    commit('', () => col.cards.push({ id: uid(), title: t, desc: '', tags: [], due: '', prio: 0, list: [], created: Date.now(), from: '' }));
++    focusAdd = col.id; renderBoard();
++  } }, input);
++  return h('section', { class: 'col', 'data-id': col.id, 'aria-label': col.name },
++    h('div', { class: 'col-head' },
++      h('h2', { text: col.name }),
++      h('span', { class: 'count' + (over ? ' over' : ''), title: over ? 'Over the limit' : '', text: col.cards.length + (col.wip ? '/' + col.wip : '') }),
++      h('button', { 'aria-label': 'Column settings for ' + col.name, title: 'Column settings', onclick: () => openColumn(col.id) }, '⋯')),
++    list, add);
++}
++
++function cardEl(c) {
++  const meta = h('div', { class: 'meta' });
++  if (c.due) {
++    const t = today(), cls = c.due < t ? 'late' : c.due === t ? 'today' : '';
++    meta.append(h('span', { class: cls, text: (cls === 'late' ? 'Overdue ' : cls ? 'Due today ' : 'Due ') + fmtDate(c.due) }));
++  }
++  if (c.prio) meta.append(h('span', { text: PRIO[c.prio] + ' priority' }));
++  if (c.list.length) meta.append(h('span', { text: '☑ ' + c.list.filter(i => i.d).length + '/' + c.list.length }));
++  if (c.desc) meta.append(h('span', { title: 'Has notes', text: '≡ notes' }));
++  const el = h('div', { class: 'card p' + c.prio, tabindex: 0, role: 'button', draggable: true, 'data-id': c.id,
++    'aria-keyshortcuts': 'Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown' },
++    c.tags.length ? h('div', {}, c.tags.map(tagEl)) : null,
++    h('div', { class: 't', text: c.title }), meta.children.length ? meta : null);
++  el.addEventListener('click', () => openCard(c.id));
++  el.addEventListener('keydown', e => {
++    if (e.target !== el) return;
++    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openCard(c.id); return; }
++    if (!e.altKey) return;
++    const f = find(c.id), cols = board().columns, ci = cols.indexOf(f.col);
++    const go = { ArrowLeft: () => ci > 0 && moveCard(c.id, cols[ci - 1].id, f.i), ArrowRight: () => ci < cols.length - 1 && moveCard(c.id, cols[ci + 1].id, f.i),
++      ArrowUp: () => f.i > 0 && moveCard(c.id, f.col.id, f.i - 1), ArrowDown: () => f.i < f.col.cards.length - 1 && moveCard(c.id, f.col.id, f.i + 1) }[e.key];
++    if (go) { e.preventDefault(); go(); }
++  });
++  el.addEventListener('dragstart', e => { dragId = c.id; e.dataTransfer.setData('text/plain', c.id); e.dataTransfer.effectAllowed = 'move'; setTimeout(() => el.classList.add('dragging')); });
++  el.addEventListener('dragend', () => { dragId = null; el.classList.remove('dragging'); clearDrop(); });
++  return el;
++}
++
++/* ---------- drag and drop (mouse) ---------- */
++let dragId = null;
++const line = h('div', { class: 'drop-line' });
++function clearDrop() { line.remove(); document.querySelectorAll('.cards.over').forEach(e => e.classList.remove('over')); }
++function dropIndex(list, col, y) {
++  const els = [...list.querySelectorAll('.card:not(.dragging)')];
++  const next = els.find(el => { const r = el.getBoundingClientRect(); return y < r.top + r.height / 2; });
++  if (next) list.insertBefore(line, next); else list.append(line);
++  if (!next) return col.cards.length;
++  return col.cards.findIndex(c => c.id === next.dataset.id);
++}
++function setupDrop(list, col) {
++  list.addEventListener('dragover', e => { if (!dragId) return; e.preventDefault(); list.classList.add('over'); dropIndex(list, col, e.clientY); });
++  list.addEventListener('dragleave', e => { if (!list.contains(e.relatedTarget)) { list.classList.remove('over'); line.remove(); } });
++  list.addEventListener('drop', e => {
++    if (!dragId) return; e.preventDefault();
++    const id = dragId, f = find(id);
++    let idx = dropIndex(list, col, e.clientY);
++    if (f && f.col === col && f.i < idx) idx--;
++    clearDrop(); dragId = null;
++    moveCard(id, col.id, idx);
++  });
++}
++
++/* ---------- dialogs ---------- */
++function openCard(id) {
++  const f = find(id); if (!f) return;
++  const c = f.card, list = c.list.map(i => ({ ...i }));
++  const title = h('input', { required: true, maxlength: 200, value: c.title });
++  const desc = h('textarea', {}, c.desc);
++  const tags = h('input', { value: c.tags.join(', '), list: 'tag-list', placeholder: 'comma, separated' });
++  const due = h('input', { type: 'date', value: c.due });
++  const prio = h('select', {}, PRIO.map((p, i) => h('option', { value: i, selected: i === c.prio, text: p })));
++  const colSel = h('select', {}, board().columns.map(k => h('option', { value: k.id, selected: k === f.col, text: k.name })));
++  const box = h('div');
++  const draw = () => box.replaceChildren(...list.map((it, i) => h('div', { class: 'check' },
++    h('input', { type: 'checkbox', checked: it.d, 'aria-label': 'Done', onchange: e => it.d = e.target.checked }),
++    h('input', { type: 'text', value: it.t, 'aria-label': 'Checklist item', maxlength: 200, oninput: e => it.t = e.target.value }),
++    h('button', { type: 'button', 'aria-label': 'Remove item', onclick: () => { list.splice(i, 1); draw(); } }, '✕'))));
++  draw();
++  const newItem = h('input', { placeholder: 'Add checklist item, press Enter', maxlength: 200, onkeydown: e => {
++    if (e.key !== 'Enter') return; e.preventDefault();
++    const t = newItem.value.trim(); if (!t) return;
++    list.push({ t, d: false }); newItem.value = ''; draw();
++  } });
++  const act = (label, cls, fn) => h('button', { type: 'button', class: cls, onclick: () => { dlg.close(); fn(); } }, label);
++  const body = [
++    h('label', {}, 'Title', title), h('label', {}, 'Notes', desc),
++    h('label', {}, 'Tags', tags, h('datalist', { id: 'tag-list' }, allTags().map(t => h('option', { value: t })))),
++    h('div', { class: 'row' }, h('label', {}, 'Due date', due), h('label', {}, 'Priority', prio)),
++    h('label', {}, 'Column', colSel),
++    h('label', {}, 'Checklist'), box, h('div', { class: 'check' }, newItem),
++    h('div', { class: 'actions' }, h('button', { class: 'primary', value: 'ok' }, 'Save'), cancelBtn(),
++      act('Duplicate', '', () => commit('Card duplicated', () => f.col.cards.splice(f.i + 1, 0, { ...JSON.parse(JSON.stringify(c)), id: uid(), title: c.title + ' (copy)', created: Date.now() }))),
++      act('Archive', '', () => commit('Card archived', () => { f.col.cards.splice(f.i, 1); board().archive.unshift({ ...c, from: f.col.id }); })),
++      act('Delete', 'danger', () => commit('Card deleted', () => f.col.cards.splice(f.i, 1))))
++  ];
++  openDialog('Edit card', body, () => commit('', () => {
++    c.title = title.value.trim() || c.title; c.desc = desc.value;
++    c.tags = [...new Set(tags.value.split(',').map(t => t.trim()).filter(Boolean))];
++    c.due = due.value; c.prio = +prio.value;
++    c.list = list.filter(i => i.t.trim()).map(i => ({ t: i.t.trim(), d: i.d }));
++    if (colSel.value !== f.col.id) { const to = board().columns.find(k => k.id === colSel.value); f.col.cards.splice(f.i, 1); to.cards.push(c); }
++    focusCard = c.id;
++  }));
++}
++
++function openColumn(id) {
++  const b = board(), i = b.columns.findIndex(c => c.id === id), col = b.columns[i];
++  const name = h('input', { required: true, maxlength: 100, value: col.name });
++  const wip = h('input', { type: 'number', min: 0, max: 999, value: col.wip });
++  const act = (label, cls, fn, disabled) => h('button', { type: 'button', class: cls, disabled, onclick: () => { dlg.close(); fn(); } }, label);
++  const swapCol = d => commit('', () => { [b.columns[i], b.columns[i + d]] = [b.columns[i + d], b.columns[i]]; });
++  openDialog('Column settings', [
++    h('label', {}, 'Name', name), h('label', {}, 'Card limit (0 = none)', wip),
++    h('div', { class: 'actions' }, h('button', { class: 'primary', value: 'ok' }, 'Save'), cancelBtn()),
++    h('div', { class: 'actions' },
++      act('← Move left', '', () => swapCol(-1), i === 0), act('Move right →', '', () => swapCol(1), i === b.columns.length - 1),
++      act('Archive all cards', '', () => commit('Cards archived', () => { b.archive.unshift(...col.cards.map(c => ({ ...c, from: col.id }))); col.cards = []; }), !col.cards.length),
++      act('Delete column', 'danger', () => commit('Column deleted (cards archived)', () => { b.archive.unshift(...col.cards.map(c => ({ ...c, from: '' }))); b.columns.splice(i, 1); })))
++  ], () => commit('', () => { col.name = name.value.trim() || col.name; col.wip = Math.max(0, +wip.value | 0); }));
++}
++
++function openArchive() {
++  const b = board();
++  const body = h('div');
++  const draw = () => {
++    body.replaceChildren(...(b.archive.length ? b.archive.map(c => h('div', { class: 'arch' }, h('span', { text: c.title }),
++      h('button', { type: 'button', onclick: () => {
++        const col = b.columns.find(k => k.id === c.from) || b.columns[0];
++        if (!col) return toast('Add a column first');
++        commit('Card restored', () => { b.archive.splice(b.archive.indexOf(c), 1); col.cards.push({ ...c, from: '' }); }); draw();
++      } }, 'Restore'),
++      h('button', { type: 'button', class: 'danger', onclick: () => { commit('Card deleted', () => b.archive.splice(b.archive.indexOf(c), 1)); draw(); } }, 'Delete'))) : [h('p', { class: 'empty', text: 'Nothing archived.' })]));
++  };
++  draw();
++  openDialog('Archived cards', [body, h('div', { class: 'actions' }, h('button', { value: 'cancel', formnovalidate: true }, 'Close'))]);
++}
++
++/* ---------- header actions ---------- */
++$('#boards').onchange = e => { S.current = e.target.value; save(); render(); };
++$('#new-board').onclick = () => askText('New board', 'Name', '', n => commit('', () => { const nb = newBoard(n, true); S.boards.push(nb); S.current = nb.id; }));
++$('#rename-board').onclick = () => askText('Rename board', 'Name', board().name, n => commit('', () => board().name = n));
++$('#delete-board').onclick = () => commit('Board deleted', () => {
++  S.boards = S.boards.filter(b => b !== board());
++  if (!S.boards.length) S.boards.push(newBoard('My board', true));
++  S.current = S.boards[0].id;
++});
++$('#search').oninput = e => { q = e.target.value.trim().toLowerCase(); renderBoard(); };
++$('#tag-filter').onchange = e => { tagFilter = e.target.value; renderBoard(); };
++$('#undo').onclick = doUndo;
++$('#redo').onclick = doRedo;
++$('#archive').onclick = openArchive;
++$('#theme').onclick = () => { S.theme = { auto: 'light', light: 'dark', dark: 'auto' }[S.theme]; save(); render(); };
++$('#export').onclick = () => {
++  const a = h('a', { href: URL.createObjectURL(new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' })), download: 'kanban-' + today() + '.json' });
++  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
++};
++$('#import').onclick = () => $('#file').click();
++$('#file').onchange = async e => {
++  const file = e.target.files[0]; e.target.value = '';
++  if (!file) return;
++  try {
++    const d = normalize(JSON.parse(await file.text()));
++    if (!confirm('Replace all current boards with the ' + d.boards.length + ' board(s) in this file? You can undo this.')) return;
++    commit('Backup imported', () => { S.boards = d.boards; S.current = d.current; });
++  } catch (err) { toast('Import failed: ' + err.message); }
++};
++
++document.addEventListener('keydown', e => {
++  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || dlg.open;
++  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); }
++  else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y' && !typing) { e.preventDefault(); doRedo(); }
++  else if (e.key === '/' && !typing) { e.preventDefault(); $('#search').focus(); }
++});
++window.addEventListener('storage', e => {
++  if (e.key !== KEY || !e.newValue) return;
++  try { S = normalize(JSON.parse(e.newValue)); undoStack = []; redoStack = []; render(); } catch {}
++});
++
++if (loadProblem) banner(loadProblem);
++save();
++render();
+diff --git a/board/index.html b/board/index.html
+new file mode 100644
+index 0000000..9862976
+--- /dev/null
++++ b/board/index.html
+@@ -0,0 +1,33 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Kanban</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<header>
++  <select id="boards" aria-label="Board"></select>
++  <button id="new-board" title="New board">+ Board</button>
++  <button id="rename-board" title="Rename board">Rename</button>
++  <button id="delete-board" title="Delete board">Delete</button>
++  <span class="grow"></span>
++  <input id="search" type="search" placeholder="Search ( / )" aria-label="Search cards">
++  <select id="tag-filter" aria-label="Filter by tag"></select>
++  <button id="undo" title="Undo (Ctrl+Z)">Undo</button>
++  <button id="redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
++  <button id="archive" title="Archived cards">Archive</button>
++  <button id="export" title="Download a backup">Export</button>
++  <button id="import" title="Restore from a backup">Import</button>
++  <button id="theme" title="Theme"></button>
++  <input id="file" type="file" accept="application/json,.json" hidden>
++</header>
++<div id="banner" role="alert" hidden></div>
++<main id="board" aria-label="Board columns"></main>
++<dialog id="dlg" aria-labelledby="dlg-title"></dialog>
++<div id="toast" role="status" aria-live="polite" hidden></div>
++<noscript><p style="padding:1rem">This app needs JavaScript.</p></noscript>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/board/style.css b/board/style.css
+new file mode 100644
+index 0000000..1c2a8fc
+--- /dev/null
++++ b/board/style.css
+@@ -0,0 +1,59 @@
++:root{--bg:#f1f2f6;--panel:#e3e5ec;--card:#fff;--text:#1d2030;--muted:#5d6379;--line:#c9cdda;--accent:#3b5bdb;--accent-text:#fff;--danger:#c92a2a;--warn:#e67700;--tag-bg:88%;--tag-fg:20%;color-scheme:light}
++@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#14161d;--panel:#1d2029;--card:#272b37;--text:#e8eaf2;--muted:#a0a6bc;--line:#3a4052;--accent:#7c93ff;--accent-text:#10131c;--danger:#ff8787;--warn:#ffa94d;--tag-bg:26%;--tag-fg:88%;color-scheme:dark}}
++:root[data-theme=dark]{--bg:#14161d;--panel:#1d2029;--card:#272b37;--text:#e8eaf2;--muted:#a0a6bc;--line:#3a4052;--accent:#7c93ff;--accent-text:#10131c;--danger:#ff8787;--warn:#ffa94d;--tag-bg:26%;--tag-fg:88%;color-scheme:dark}
++*{box-sizing:border-box}
++body{margin:0;height:100vh;height:100dvh;display:flex;flex-direction:column;background:var(--bg);color:var(--text);font:15px/1.4 system-ui,-apple-system,Segoe UI,sans-serif}
++header{display:flex;flex-wrap:wrap;gap:.5rem;padding:.6rem .8rem;border-bottom:1px solid var(--line);align-items:center}
++.grow{flex:1}
++button,select,input,textarea{font:inherit;color:inherit}
++button,select,input,textarea{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:.35rem .6rem}
++button{cursor:pointer}
++button:hover:not(:disabled){border-color:var(--accent)}
++button:disabled{opacity:.45;cursor:default}
++button.primary{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
++button.danger{color:var(--danger)}
++:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
++#banner{background:var(--danger);color:#fff;padding:.5rem .8rem}
++#board{flex:1;display:flex;gap:.8rem;padding:.8rem;overflow-x:auto;align-items:flex-start;scroll-snap-type:x proximity}
++.col{flex:0 0 290px;max-height:100%;display:flex;flex-direction:column;background:var(--panel);border-radius:10px;scroll-snap-align:start}
++.col-head{display:flex;align-items:center;gap:.4rem;padding:.6rem .6rem .3rem .8rem}
++.col-head h2{flex:1;margin:0;font-size:1rem;overflow-wrap:anywhere}
++.count{color:var(--muted);font-size:.85rem}
++.count.over{color:var(--warn);font-weight:700}
++.cards{flex:1;overflow-y:auto;padding:.3rem .5rem;min-height:2.5rem;display:flex;flex-direction:column;gap:.5rem}
++.cards.over{outline:2px dashed var(--accent);outline-offset:-4px;border-radius:8px}
++.empty{color:var(--muted);text-align:center;padding:.8rem .4rem;font-size:.9rem}
++.card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--line);border-radius:8px;padding:.5rem .6rem;cursor:pointer;overflow-wrap:anywhere}
++.card.p1{border-left-color:#4dabf7}.card.p2{border-left-color:var(--warn)}.card.p3{border-left-color:var(--danger)}
++.card.dragging{opacity:.4}
++.card:hover{border-color:var(--accent)}
++.card .t{font-weight:500}
++.meta{display:flex;flex-wrap:wrap;gap:.3rem .6rem;margin-top:.3rem;font-size:.8rem;color:var(--muted)}
++.meta .late{color:var(--danger);font-weight:700}.meta .today{color:var(--warn);font-weight:700}
++.tag{display:inline-block;font-size:.75rem;padding:0 .45rem;border-radius:99px;margin:0 .25rem .25rem 0;background:hsl(var(--h) 70% var(--tag-bg));color:hsl(var(--h) 60% var(--tag-fg))}
++.drop-line{height:3px;background:var(--accent);border-radius:2px;flex:none}
++.add{padding:.4rem .5rem .5rem}
++.add input{width:100%}
++.add-col{flex:0 0 290px}
++.add-col input{width:100%}
++.board-empty{margin:auto;text-align:center;color:var(--muted)}
++dialog{width:min(560px,94vw);max-height:92vh;overflow:auto;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:1rem 1.2rem}
++dialog::backdrop{background:rgba(0,0,0,.5)}
++dialog h2{margin:0 0 .6rem;font-size:1.1rem}
++dialog label{display:block;margin:.6rem 0 0;font-size:.85rem;color:var(--muted)}
++dialog label>input,dialog label>textarea,dialog label>select{display:block;width:100%;margin-top:.2rem;color:var(--text)}
++dialog textarea{min-height:6rem;resize:vertical}
++.row{display:flex;gap:.6rem}.row>*{flex:1}
++.actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1rem}
++.check{display:flex;gap:.5rem;align-items:center;margin-top:.3rem}
++.check input[type=text]{flex:1}
++.check input[type=checkbox]{width:1.1rem;height:1.1rem}
++.arch{display:flex;gap:.5rem;align-items:center;padding:.4rem 0;border-bottom:1px solid var(--line)}
++.arch span{flex:1;overflow-wrap:anywhere}
++#toast{position:fixed;left:50%;bottom:1rem;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:.5rem .9rem;border-radius:8px;display:flex;gap:.8rem;align-items:center;z-index:10;max-width:94vw}
++#toast button{background:transparent;color:inherit;border-color:currentColor}
++@media (max-width:600px){
++  header{gap:.35rem}#search{flex:1 1 100%;order:9}
++  .col,.add-col{flex-basis:85vw}
++}
++@media (prefers-reduced-motion:no-preference){.card{transition:border-color .15s,opacity .15s}#board{scroll-behavior:smooth}}

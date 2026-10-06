@@ -1,0 +1,23 @@
+{
+  "none": {
+    "text": ""
+  },
+  "terse": {
+    "text": "Be concise. Do not over-engineer. Preserve every requested behavior and existing contract."
+  },
+  "ponytail": {
+    "repository": "DietrichGebert/ponytail",
+    "file": "skills/ponytail/SKILL.md",
+    "blob_sha": "02c0712c86277d49d18a77da3a2b825657bf02d1",
+    "license": "MIT"
+  },
+  "caveman": {
+    "repository": "JuliusBrussee/caveman",
+    "file": "skills/caveman/SKILL.md",
+    "blob_sha": "f029f003c1e9ef36d7cef8a76702192dea73c4cd",
+    "license": "Apache-2.0"
+  },
+  "whittle": {
+    "path": "../skills/whittle/SKILL.md"
+  }
+}

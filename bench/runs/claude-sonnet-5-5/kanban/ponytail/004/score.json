@@ -1,0 +1,35 @@
+{
+  "task": "kanban",
+  "arm": "ponytail",
+  "run": "004",
+  "checks": 40,
+  "passed": 29,
+  "missed": [
+    "test_k07_move_without_a_mouse",
+    "test_k17_empty_state",
+    "test_k23_motion_with_reduced_motion_respected",
+    "test_k29_checklists_or_subtasks",
+    "test_k30_work_in_progress_limits",
+    "test_k31_reorder_columns",
+    "test_k32_archive_or_trash",
+    "test_k37_overdue_is_visible",
+    "test_k38_sort_cards",
+    "test_k39_saved_data_has_a_version",
+    "test_k40_reset_or_clear_board"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 268,
+  "agent": {
+    "harness": "claude",
+    "model": "claude-sonnet-5-5",
+    "exit": 0,
+    "seconds": 59.0,
+    "tokens": {
+      "input": 14521,
+      "output": 8753,
+      "cacheRead": 37745,
+      "cost": 0.153155
+    },
+    "turns": 5
+  }
+}

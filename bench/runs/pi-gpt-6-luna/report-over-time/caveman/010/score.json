@@ -1,0 +1,27 @@
+{
+  "task": "report-over-time",
+  "arm": "caveman",
+  "run": "010",
+  "checks": 40,
+  "passed": 39,
+  "missed": [
+    "test_r30_group_names_title_cased_in_table_only"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 171,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 164.0,
+    "tokens": {
+      "input": 49553,
+      "output": 6174,
+      "cacheRead": 51712,
+      "cost": 0.008559
+    },
+    "turns": 23,
+    "tool_calls": 23
+  }
+}

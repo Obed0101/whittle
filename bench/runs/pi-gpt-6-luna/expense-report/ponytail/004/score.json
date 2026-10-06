@@ -1,0 +1,27 @@
+{
+  "task": "expense-report",
+  "arm": "ponytail",
+  "run": "004",
+  "checks": 32,
+  "passed": 31,
+  "missed": [
+    "test_r23_invalid_date"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 111,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 51.2,
+    "tokens": {
+      "input": 5818,
+      "output": 2048,
+      "cacheRead": 26112,
+      "cost": 0.001867
+    },
+    "turns": 7,
+    "tool_calls": 8
+  }
+}

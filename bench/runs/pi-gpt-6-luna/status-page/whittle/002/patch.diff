@@ -1,0 +1,127 @@
+diff --git a/app/page.py b/app/page.py
+new file mode 100644
+index 0000000..fcd1d64
+--- /dev/null
++++ b/app/page.py
+@@ -0,0 +1,121 @@
++"""Generate a self-contained public service status page."""
++import html
++import json
++import re
++import sys
++from datetime import datetime, timezone
++
++
++LABELS = {
++    "operational": "Operational",
++    "degraded": "Degraded performance",
++    "outage": "Major outage",
++    "maintenance": "Under maintenance",
++}
++SEVERITY = {"outage": 0, "degraded": 1, "maintenance": 2, "operational": 3}
++
++
++def _e(value):
++    return html.escape(str(value), quote=True)
++
++
++def render(services: list[dict], generated_at: str) -> str:
++    """Render service records as a complete, portable HTML status page."""
++    for service in services:
++        state = service["state"]
++        if state not in LABELS:
++            raise ValueError(f"unknown state: {state}")
++
++    ordered = sorted(services, key=lambda s: (SEVERITY[s["state"]], s["name"].casefold()))
++    total = len(services)
++    needing = sum(s["state"] in ("degraded", "outage") for s in services)
++    maintenance = sum(s["state"] == "maintenance" for s in services)
++    down = any(s["state"] == "outage" for s in services)
++    degraded = any(s["state"] == "degraded" for s in services)
++
++    if not total:
++        title = "Status · no services"
++        content = '<p class="empty">No services configured.</p>'
++    else:
++        title = f"Status · {sum(s['state'] == 'operational' for s in services)} of {total} operational"
++        if needing:
++            banner_text = f"{needing} of {total} service{'s' if needing != 1 else ''} {'need' if needing != 1 else 'needs'} attention"
++        else:
++            banner_text = "All systems operational"
++        if maintenance:
++            banner_text += f" · {maintenance} under maintenance"
++        modifier = "down" if down else "warn" if degraded else "ok"
++        items = []
++        for service in ordered:
++            state = service["state"]
++            slug = re.sub(r"[^a-z0-9]+", "-", service["name"].lower()).strip("-")
++            name = _e(service["name"])
++            if service.get("url"):
++                url = _e(service["url"])
++                rel = ' rel="noopener"' if re.match(r"https?://", str(service["url"]), re.I) else ""
++                name = f'<a href="{url}"{rel}>{name}</a>'
++            details = f'<span class="state">{LABELS[state]}</span>'
++            if service.get("uptime") is not None:
++                details += f'<span class="uptime">{float(service["uptime"]):.2f}% uptime</span>'
++            note = f'<p class="note">{_e(service["note"])}</p>' if service.get("note") else ""
++            items.append(
++                f'<li class="service" id="service-{_e(slug)}" data-state="{_e(state)}">'
++                f'<span class="dot" aria-hidden="true"></span><div class="service-info">'
++                f'<h2>{name}</h2><div class="service-meta">{details}</div>{note}</div></li>'
++            )
++        content = f'<div class="banner banner--{modifier}" role="status">{_e(banner_text)}</div><ul class="services">{"".join(items)}</ul>'
++
++    return f'''<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>{_e(title)}</title>
++<style>
++:root {{ --bg: #f5f7fa; --text: #1d2939; --ok: #16803c; --warn: #a15c00; --down: #c62828; --maint: #5265a8; }}
++@media (prefers-color-scheme: dark) {{ :root {{ --bg: #151a22; --text: #edf1f7; --ok: #60d394; --warn: #ffc266; --down: #ff7777; --maint: #aab8ff; }} }}
++* {{ box-sizing: border-box; }}
++body {{ margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }}
++header, main, footer {{ width: 100%; max-width: 640px; margin: 0 auto; }}
++h1 {{ margin: 0 0 1.5rem; font-size: 2rem; }}
++.banner {{ padding: 1rem 1.2rem; margin-bottom: 1rem; border-radius: .6rem; font-weight: 650; }}
++.banner--ok {{ color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--bg)); }}
++.banner--warn {{ color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--bg)); }}
++.banner--down {{ color: var(--down); background: color-mix(in srgb, var(--down) 12%, var(--bg)); }}
++.services {{ list-style: none; padding: 0; margin: 0; }}
++.service {{ display: flex; align-items: flex-start; gap: 1rem; padding: 1.1rem; margin-bottom: .75rem; border: 1px solid color-mix(in srgb, var(--text) 15%, transparent); border-radius: .6rem; }}
++.dot {{ width: .7rem; height: .7rem; flex: 0 0 .7rem; margin-top: .45rem; border-radius: 50%; background: var(--ok); }}
++[data-state="operational"] .dot {{ background: var(--ok); }}
++[data-state="degraded"] .dot {{ background: var(--warn); }}
++[data-state="outage"] .dot {{ background: var(--down); animation: pulse 1.5s ease-in-out infinite; }}
++[data-state="maintenance"] .dot {{ background: var(--maint); }}
++@keyframes pulse {{ 50% {{ opacity: .35; transform: scale(.8); }} }}
++@media (prefers-reduced-motion: reduce) {{ [data-state="outage"] .dot {{ animation: none; }} }}
++.service-info {{ flex: 1; min-width: 0; }}
++h2 {{ margin: 0 0 .35rem; font-size: 1.1rem; }}
++a {{ color: inherit; }}
++a:focus-visible {{ outline: 3px solid var(--warn); outline-offset: 3px; border-radius: 2px; }}
++.service-meta {{ display: flex; gap: 1rem; flex-wrap: wrap; font-size: .9rem; }}
++.note {{ margin: .65rem 0 0; }}
++.empty {{ padding: 1rem; }}
++footer {{ margin-top: 2rem; color: color-mix(in srgb, var(--text) 70%, transparent); font-size: .9rem; }}
++@media (max-width: 480px) {{ .service {{ flex-direction: column; gap: .4rem; }} .dot {{ margin-top: 0; }} }}
++</style>
++</head>
++<body>
++<header><h1>System status</h1></header>
++<main>{content}</main>
++<footer><time datetime="{_e(generated_at)}">Updated {_e(generated_at)}</time></footer>
++</body>
++</html>'''
++
++
++def main():
++    from .status import load
++    services = load(sys.argv[1])
++    generated_at = datetime.now(timezone.utc).isoformat()
++    print(render(services, generated_at))
++
++
++if __name__ == "__main__":
++    main()

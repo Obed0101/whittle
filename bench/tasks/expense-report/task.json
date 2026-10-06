@@ -1,0 +1,19 @@
+{
+  "baseline_sha": "fefa506f29f81393746ec899404497916bad37c1",
+  "turns": [
+    "task.md"
+  ],
+  "checks": 32,
+  "solution": {
+    "solutions/report.py": "app/report.py"
+  },
+  "regression": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests",
+    "-q"
+  ]
+}

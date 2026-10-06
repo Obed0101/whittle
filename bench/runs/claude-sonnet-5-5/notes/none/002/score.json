@@ -1,0 +1,26 @@
+{
+  "task": "notes",
+  "arm": "none",
+  "run": "002",
+  "checks": 36,
+  "passed": 34,
+  "missed": [
+    "test_n25_motion_with_reduced_motion_respected",
+    "test_n35_duplicate_note"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 1083,
+  "agent": {
+    "harness": "claude",
+    "model": "claude-sonnet-5-5",
+    "exit": 0,
+    "seconds": 225.4,
+    "tokens": {
+      "input": 40391,
+      "output": 36711,
+      "cacheRead": 122847,
+      "cost": 0.553227
+    },
+    "turns": 5
+  }
+}

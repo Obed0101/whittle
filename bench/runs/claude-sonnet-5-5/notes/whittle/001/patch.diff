@@ -1,0 +1,467 @@
+diff --git a/notes/app.js b/notes/app.js
+new file mode 100644
+index 0000000..245dbab
+--- /dev/null
++++ b/notes/app.js
+@@ -0,0 +1,298 @@
++(() => {
++const KEY = 'notes.v1', VERSION = 1, TRASH_DAYS = 30;
++const $ = id => document.getElementById(id);
++const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
++
++let state = { version: VERSION, notes: [], settings: { theme: 'auto', sort: 'updated' } };
++let view = 'notes', tagFilter = null, query = '', currentId = null, preview = false;
++let saveTimer = null, undoFn = null, toastTimer = null, storageOk = true;
++
++function load() {
++  try {
++    const raw = localStorage.getItem(KEY);
++    if (raw) {
++      const d = JSON.parse(raw);
++      if (d && Array.isArray(d.notes)) state = { version: VERSION, notes: d.notes.map(norm).filter(Boolean), settings: { ...state.settings, ...d.settings } };
++    }
++  } catch (e) { storageOk = false; }
++  const cutoff = Date.now() - TRASH_DAYS * 864e5;
++  state.notes = state.notes.filter(n => !n.deleted || n.deleted > cutoff);
++}
++function norm(n) {
++  if (!n || typeof n !== 'object' || typeof n.id !== 'string') return null;
++  return {
++    id: n.id, title: String(n.title || ''), body: String(n.body || ''),
++    tags: Array.isArray(n.tags) ? [...new Set(n.tags.map(t => String(t).trim().toLowerCase()).filter(Boolean))] : [],
++    pinned: !!n.pinned, created: +n.created || Date.now(), updated: +n.updated || Date.now(), deleted: n.deleted ? +n.deleted : null
++  };
++}
++function save() {
++  clearTimeout(saveTimer); saveTimer = null;
++  try { localStorage.setItem(KEY, JSON.stringify(state)); storageOk = true; }
++  catch (e) { storageOk = false; setStatus('⚠ Could not save (storage full or blocked). Export a backup!'); }
++}
++function queueSave() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { save(); updateStatus(); }, 300); }
++
++const cur = () => state.notes.find(n => n.id === currentId);
++const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
++const title = n => n.title.trim() || (n.body.trim().split('\n')[0].slice(0, 60)) || 'Untitled';
++
++function visible() {
++  const q = query.trim().toLowerCase();
++  let r = state.notes.filter(n => view === 'trash' ? n.deleted : !n.deleted);
++  if (tagFilter) r = r.filter(n => n.tags.includes(tagFilter));
++  if (q) r = r.filter(n => (n.title + '\n' + n.body + '\n' + n.tags.join(' ')).toLowerCase().includes(q));
++  const s = state.settings.sort;
++  return r.sort((a, b) => (view === 'trash' ? 0 : (b.pinned - a.pinned)) ||
++    (s === 'title' ? title(a).localeCompare(title(b)) : b[s] - a[s]));
++}
++
++function renderNav() {
++  const live = state.notes.filter(n => !n.deleted), dead = state.notes.length - live.length;
++  $('views').innerHTML = '';
++  [['notes', 'All notes', live.length], ['trash', 'Trash', dead]].forEach(([k, l, c]) => {
++    const b = document.createElement('button');
++    b.className = 'navitem'; b.setAttribute('aria-current', view === k && !tagFilter);
++    b.innerHTML = `<span>${l}</span><span>${c}</span>`;
++    b.onclick = () => { view = k; tagFilter = null; select(null); $('app').dataset.pane = 'list'; render(); };
++    $('views').append(b);
++  });
++  const counts = {};
++  live.forEach(n => n.tags.forEach(t => counts[t] = (counts[t] || 0) + 1));
++  $('tags').innerHTML = '';
++  Object.keys(counts).sort().forEach(t => {
++    const b = document.createElement('button');
++    b.className = 'navitem'; b.setAttribute('aria-current', tagFilter === t);
++    b.innerHTML = `<span>#${esc(t)}</span><span>${counts[t]}</span>`;
++    b.onclick = () => { view = 'notes'; tagFilter = tagFilter === t ? null : t; select(null); $('app').dataset.pane = 'list'; render(); };
++    $('tags').append(b);
++  });
++  if (!Object.keys(counts).length) $('tags').innerHTML = '<p class="m" style="padding:0 8px">No tags yet</p>';
++  $('tagList').innerHTML = Object.keys(counts).map(t => `<option value="${esc(t)}">`).join('');
++}
++
++function renderList() {
++  const items = visible(), ul = $('list');
++  $('listTitle').textContent = (view === 'trash' ? 'Trash' : tagFilter ? '#' + tagFilter : 'All notes') + ` · ${items.length}`;
++  ul.innerHTML = '';
++  items.forEach(n => {
++    const li = document.createElement('li'), b = document.createElement('button');
++    b.setAttribute('aria-current', n.id === currentId);
++    const snip = n.body.replace(/\s+/g, ' ').slice(0, 140);
++    b.innerHTML = `<div class="t">${n.pinned ? '📌 ' : ''}${esc(title(n))}</div><div class="s">${esc(snip) || '&nbsp;'}</div>
++      <div class="m">${new Date(n.updated).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}${n.tags.length ? ' · ' + esc(n.tags.map(t => '#' + t).join(' ')) : ''}</div>`;
++    b.onclick = () => { select(n.id); $('app').dataset.pane = 'editor'; };
++    li.append(b); ul.append(li);
++  });
++  const e = $('emptyList');
++  e.hidden = items.length > 0;
++  e.textContent = query ? 'No notes match your search.' : view === 'trash' ? `Trash is empty. Deleted notes are kept ${TRASH_DAYS} days.` : tagFilter ? 'No notes with this tag.' : 'No notes yet. Create your first one with “+ New note”.';
++}
++
++function renderEditor() {
++  const n = cur();
++  $('noEditor').hidden = !!n; $('editor').hidden = !n;
++  if (!n) return;
++  const dead = !!n.deleted;
++  $('title').value = n.title; $('body').value = n.body; $('tagInput').value = n.tags.join(', ');
++  ['title', 'body', 'tagInput'].forEach(i => $(i).readOnly = dead);
++  $('pinBtn').hidden = $('delBtn').hidden = dead;
++  $('restoreBtn').hidden = $('purgeBtn').hidden = !dead;
++  $('pinBtn').setAttribute('aria-pressed', n.pinned);
++  setPreview(preview || dead);
++  updateStatus();
++}
++function setPreview(on) {
++  preview = on;
++  $('previewBtn').setAttribute('aria-pressed', on);
++  $('body').hidden = on; $('preview').hidden = !on;
++  if (on) $('preview').innerHTML = md(cur().body);
++}
++function setStatus(t) { $('status').textContent = t; }
++function updateStatus() {
++  const n = cur(); if (!n || !storageOk) return;
++  const w = n.body.trim() ? n.body.trim().split(/\s+/).length : 0;
++  setStatus(`${w} words · ${n.body.length} chars · Saved ${new Date(n.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
++}
++function render() { renderNav(); renderList(); renderEditor(); }
++function select(id) { flush(); currentId = id; renderList(); renderEditor(); }
++function flush() { if (saveTimer) save(); }
++
++function touch(n) { n.updated = Date.now(); queueSave(); renderNav(); renderList(); }
++
++function newNote() {
++  if (view === 'trash') view = 'notes';
++  query = ''; $('search').value = '';
++  const n = { id: uid(), title: '', body: '', tags: tagFilter ? [tagFilter] : [], pinned: false, created: Date.now(), updated: Date.now(), deleted: null };
++  state.notes.push(n); save(); select(n.id); render();
++  $('app').dataset.pane = 'editor'; setPreview(false); $('title').focus();
++}
++
++function toast(msg, undo) {
++  $('toastMsg').textContent = msg; $('toastUndo').hidden = !undo; undoFn = undo;
++  $('toast').hidden = false; clearTimeout(toastTimer);
++  toastTimer = setTimeout(() => $('toast').hidden = true, 7000);
++}
++$('toastUndo').onclick = () => { const f = undoFn; $('toast').hidden = true; if (f) f(); };
++
++function trash() {
++  const n = cur(); if (!n) return;
++  n.deleted = Date.now(); save(); currentId = null; $('app').dataset.pane = 'list'; render();
++  toast('Note moved to trash', () => { n.deleted = null; save(); render(); });
++}
++function restore() {
++  const n = cur(); if (!n) return;
++  n.deleted = null; save(); currentId = null; $('app').dataset.pane = 'list'; render();
++  toast('Note restored', () => { n.deleted = Date.now(); save(); render(); });
++}
++function purge() {
++  const n = cur(); if (!n || !confirm('Delete this note forever?')) return;
++  const i = state.notes.indexOf(n);
++  state.notes.splice(i, 1); save(); currentId = null; $('app').dataset.pane = 'list'; render();
++  toast('Note deleted forever', () => { state.notes.splice(i, 0, n); save(); render(); });
++}
++
++// Markdown
++function inline(s) {
++  const codes = [];
++  s = s.replace(/`([^`]+)`/g, (m, c) => { codes.push(c); return '\0' + (codes.length - 1) + '\0'; });
++  s = esc(s)
++    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
++    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
++    .replace(/(^|[^*\w])\*(?!\s)(.+?)\*(?!\w)/g, '$1<em>$2</em>')
++    .replace(/(^|[^\w])_(?!\s)(.+?)_(?!\w)/g, '$1<em>$2</em>')
++    .replace(/~~(.+?)~~/g, '<del>$1</del>');
++  return s.replace(/\0(\d+)\0/g, (m, i) => '<code>' + esc(codes[i]) + '</code>');
++}
++function md(src) {
++  const L = src.split('\n'); let out = '', i = 0;
++  const list = (re, tag, cls) => {
++    out += `<${tag}${cls}>`;
++    while (i < L.length && re.test(L[i])) {
++      const m = L[i].match(re), t = m[m.length - 1].match(/^\[([ xX])\]\s(.*)/);
++      out += t ? `<li><label><input type="checkbox" data-line="${i}"${t[1] !== ' ' ? ' checked' : ''}> ${inline(t[2])}</label></li>` : `<li>${inline(m[m.length - 1])}</li>`;
++      i++;
++    }
++    out += `</${tag}>`;
++  };
++  while (i < L.length) {
++    const l = L[i];
++    if (/^```/.test(l)) {
++      const c = []; i++;
++      while (i < L.length && !/^```/.test(L[i])) c.push(L[i++]);
++      i++; out += `<pre><code>${esc(c.join('\n'))}</code></pre>`;
++    } else if (/^#{1,4}\s/.test(l)) {
++      const h = l.match(/^(#+)\s+(.*)/); out += `<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`; i++;
++    } else if (/^(-{3,}|\*{3,})\s*$/.test(l)) { out += '<hr>'; i++; }
++    else if (/^>\s?/.test(l)) {
++      const q = [];
++      while (i < L.length && /^>\s?/.test(L[i])) q.push(L[i++].replace(/^>\s?/, ''));
++      out += `<blockquote>${inline(q.join(' '))}</blockquote>`;
++    } else if (/^\s*[-*+]\s+\[[ xX]\]\s/.test(l)) list(/^\s*[-*+]\s+(.*)/, 'ul', ' class="tasks"');
++    else if (/^\s*[-*+]\s+/.test(l)) list(/^\s*[-*+]\s+(.*)/, 'ul', '');
++    else if (/^\s*\d+[.)]\s+/.test(l)) list(/^\s*\d+[.)]\s+(.*)/, 'ol', '');
++    else if (!l.trim()) i++;
++    else {
++      const p = [];
++      while (i < L.length && L[i].trim() && !/^(```|#{1,4}\s|>|\s*[-*+]\s|\s*\d+[.)]\s)/.test(L[i])) p.push(L[i++]);
++      if (!p.length) p.push(L[i++]);
++      out += `<p>${p.map(inline).join('<br>')}</p>`;
++    }
++  }
++  return out || '<p class="m">Nothing to preview.</p>';
++}
++$('preview').addEventListener('change', e => {
++  const n = cur(), c = e.target;
++  if (!n || n.deleted || c.dataset.line === undefined) return;
++  const L = n.body.split('\n'), k = +c.dataset.line;
++  L[k] = L[k].replace(/\[[ xX]\]/, c.checked ? '[x]' : '[ ]');
++  n.body = L.join('\n'); touch(n);
++});
++
++// Events
++$('newBtn').onclick = $('newBtn2').onclick = newNote;
++$('menuBtn').onclick = () => $('app').dataset.pane = 'nav';
++$('backBtn').onclick = () => { flush(); $('app').dataset.pane = 'list'; };
++$('search').oninput = e => { query = e.target.value; renderList(); };
++$('sort').onchange = e => { state.settings.sort = e.target.value; save(); renderList(); };
++$('theme').onchange = e => { state.settings.theme = e.target.value; save(); document.documentElement.dataset.theme = e.target.value; };
++$('title').oninput = e => { const n = cur(); n.title = e.target.value; touch(n); };
++$('body').oninput = e => { const n = cur(); n.body = e.target.value; touch(n); setStatus('Saving…'); };
++$('tagInput').onchange = e => {
++  const n = cur();
++  n.tags = [...new Set(e.target.value.split(',').map(t => t.trim().replace(/^#/, '').toLowerCase()).filter(Boolean))];
++  e.target.value = n.tags.join(', '); touch(n);
++};
++$('pinBtn').onclick = () => { const n = cur(); n.pinned = !n.pinned; $('pinBtn').setAttribute('aria-pressed', n.pinned); touch(n); };
++$('previewBtn').onclick = () => { if (!cur().deleted) setPreview(!preview); };
++$('delBtn').onclick = trash; $('restoreBtn').onclick = restore; $('purgeBtn').onclick = purge;
++$('mdBtn').onclick = () => {
++  const n = cur();
++  download(`${title(n).replace(/[\\/:*?"<>|]/g, '_')}.md`, `# ${title(n)}\n\n${n.body}\n`, 'text/markdown');
++};
++$('helpBtn').onclick = () => $('help').showModal();
++
++function download(name, text, type) {
++  const a = document.createElement('a');
++  a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name;
++  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
++}
++$('exportBtn').onclick = () => { flush(); download(`notes-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(state, null, 2), 'application/json'); };
++$('importBtn').onclick = () => $('importFile').click();
++$('importFile').onchange = async e => {
++  const f = e.target.files[0]; e.target.value = '';
++  if (!f) return;
++  try {
++    const d = JSON.parse(await f.text());
++    if (!d || !Array.isArray(d.notes)) throw 0;
++    if (d.version > VERSION) { alert('This backup is from a newer version of the app.'); return; }
++    let added = 0, updated = 0;
++    d.notes.map(norm).filter(Boolean).forEach(n => {
++      const ex = state.notes.find(x => x.id === n.id);
++      if (!ex) { state.notes.push(n); added++; }
++      else if (n.updated > ex.updated) { Object.assign(ex, n); updated++; }
++    });
++    save(); render(); toast(`Imported ${added} new, ${updated} updated notes`);
++  } catch (err) { alert('That file is not a valid notes backup.'); }
++};
++
++document.addEventListener('keydown', e => {
++  const mod = e.ctrlKey || e.metaKey, tag = e.target.tagName, typing = /INPUT|TEXTAREA|SELECT/.test(tag);
++  if (mod && e.altKey && e.code === 'KeyN') { e.preventDefault(); newNote(); }
++  else if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); $('app').dataset.pane = 'list'; $('search').focus(); }
++  else if (mod && e.key.toLowerCase() === 'e' && cur() && !cur().deleted) { e.preventDefault(); setPreview(!preview); }
++  else if (e.key === '/' && !typing) { e.preventDefault(); $('app').dataset.pane = 'list'; $('search').focus(); }
++  else if (e.key === 'Escape') {
++    if (e.target === $('search') && query) { query = ''; $('search').value = ''; renderList(); }
++    else if (typing && $('editor').contains(e.target)) { e.target.blur(); }
++    else if ($('app').dataset.pane === 'editor') $('app').dataset.pane = 'list';
++  } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && $('list').contains(e.target)) {
++    e.preventDefault();
++    const li = e.target.closest('li'), t = e.key === 'ArrowDown' ? li.nextElementSibling : li.previousElementSibling;
++    if (t) t.querySelector('button').focus();
++  }
++});
++
++window.addEventListener('storage', e => {
++  if (e.key !== KEY) return;
++  const focused = document.activeElement;
++  load();
++  if (currentId && !cur()) currentId = null;
++  renderNav(); renderList();
++  if (!$('editor').contains(focused)) renderEditor();
++});
++window.addEventListener('beforeunload', flush);
++document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
++
++load();
++document.documentElement.dataset.theme = state.settings.theme;
++$('theme').value = state.settings.theme; $('sort').value = state.settings.sort;
++if (!storageOk) setStatus('⚠ Storage unavailable; notes will not persist.');
++if (!state.notes.length) {
++  const t = Date.now();
++  state.notes.push({ id: uid(), title: 'Welcome to Notes', pinned: true, tags: ['welcome'], created: t, updated: t, deleted: null,
++    body: 'Notes are saved automatically in this browser.\n\n- [ ] Create a note with **+ New note**\n- [ ] Try the preview (👁) and tick these boxes\n- [ ] Export a backup now and then\n\nSupports **bold**, *italic*, `code`, [links](https://example.com) and more. Press the shortcuts button for keys.' });
++  save();
++}
++render();
++})();
+diff --git a/notes/index.html b/notes/index.html
+new file mode 100644
+index 0000000..3f5f628
+--- /dev/null
++++ b/notes/index.html
+@@ -0,0 +1,85 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="color-scheme" content="light dark">
++<title>Notes</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<div id="app" data-pane="list">
++  <nav id="nav" aria-label="Sidebar">
++    <h1>Notes</h1>
++    <button id="newBtn" class="primary" title="New note (Ctrl/⌘+Alt+N)">+ New note</button>
++    <div id="views" role="list"></div>
++    <h2>Tags</h2>
++    <div id="tags" role="list"></div>
++    <div class="spacer"></div>
++    <label class="row">Theme
++      <select id="theme" aria-label="Theme">
++        <option value="auto">System</option><option value="light">Light</option><option value="dark">Dark</option>
++      </select>
++    </label>
++    <button id="exportBtn">Export backup</button>
++    <button id="importBtn">Import backup</button>
++    <button id="helpBtn">Keyboard shortcuts</button>
++    <input type="file" id="importFile" accept="application/json,.json" hidden>
++  </nav>
++
++  <section id="listPane" aria-label="Note list">
++    <div class="bar">
++      <button id="menuBtn" class="icon mobile-only" aria-label="Menu">☰</button>
++      <input id="search" type="search" placeholder="Search (/)" aria-label="Search notes">
++      <button id="newBtn2" class="icon mobile-only" aria-label="New note">＋</button>
++    </div>
++    <div class="bar sub">
++      <span id="listTitle"></span>
++      <select id="sort" aria-label="Sort notes">
++        <option value="updated">Last edited</option><option value="created">Created</option><option value="title">Title</option>
++      </select>
++    </div>
++    <ul id="list"></ul>
++    <p id="emptyList" class="empty" hidden></p>
++  </section>
++
++  <main id="editorPane" aria-label="Editor">
++    <div id="noEditor" class="empty">Select a note or create a new one.</div>
++    <div id="editor" hidden>
++      <div class="bar">
++        <button id="backBtn" class="icon mobile-only" aria-label="Back to list">←</button>
++        <input id="title" placeholder="Title" aria-label="Title" maxlength="300">
++        <button id="pinBtn" class="icon" aria-pressed="false" title="Pin">📌</button>
++        <button id="previewBtn" class="icon" aria-pressed="false" title="Toggle preview (Ctrl/⌘+E)">👁</button>
++        <button id="mdBtn" class="icon" title="Download as Markdown">⤓</button>
++        <button id="delBtn" class="icon" title="Move to trash">🗑</button>
++        <button id="restoreBtn" class="icon" title="Restore" hidden>↩</button>
++        <button id="purgeBtn" class="icon danger" title="Delete forever" hidden>✕</button>
++      </div>
++      <input id="tagInput" placeholder="Tags, comma separated" aria-label="Tags" list="tagList">
++      <datalist id="tagList"></datalist>
++      <textarea id="body" placeholder="Write in Markdown…" aria-label="Note body"></textarea>
++      <div id="preview" hidden></div>
++      <div id="status" aria-live="polite"></div>
++    </div>
++  </main>
++</div>
++
++<div id="toast" role="status" aria-live="polite" hidden><span id="toastMsg"></span><button id="toastUndo">Undo</button></div>
++
++<dialog id="help">
++  <h2>Keyboard shortcuts</h2>
++  <dl>
++    <dt>Ctrl/⌘ + Alt + N</dt><dd>New note</dd>
++    <dt>/ or Ctrl/⌘ + K</dt><dd>Search</dd>
++    <dt>Ctrl/⌘ + E</dt><dd>Toggle preview</dd>
++    <dt>↑ / ↓ in list</dt><dd>Move between notes</dd>
++    <dt>Esc</dt><dd>Leave editor / clear search</dd>
++    <dt>Ctrl/⌘ + Z</dt><dd>Undo typing (browser); Undo button after deleting</dd>
++  </dl>
++  <p>Markdown: # headings, **bold**, *italic*, ~~strike~~, `code`, ``` blocks, &gt; quotes, - lists, 1. lists, - [ ] tasks (clickable in preview), [links](https://…), ---.</p>
++  <form method="dialog"><button class="primary">Close</button></form>
++</dialog>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/notes/style.css b/notes/style.css
+new file mode 100644
+index 0000000..d3c5e15
+--- /dev/null
++++ b/notes/style.css
+@@ -0,0 +1,66 @@
++:root{--bg:#fff;--bg2:#f6f6f4;--bg3:#ebebe7;--fg:#1c1c1a;--mut:#6b6b66;--bd:#dcdcd6;--ac:#2c6bed;--acfg:#fff;--dg:#c62828;color-scheme:light}
++:root[data-theme=dark]{--bg:#18181a;--bg2:#202023;--bg3:#2b2b30;--fg:#e8e8e6;--mut:#9a9a96;--bd:#35353a;--ac:#6b9bff;--acfg:#10131a;--dg:#ef7b7b;color-scheme:dark}
++@media(prefers-color-scheme:dark){:root[data-theme=auto]{--bg:#18181a;--bg2:#202023;--bg3:#2b2b30;--fg:#e8e8e6;--mut:#9a9a96;--bd:#35353a;--ac:#6b9bff;--acfg:#10131a;--dg:#ef7b7b;color-scheme:dark}}
++*{box-sizing:border-box}
++html,body{height:100%;margin:0}
++body{font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--fg)}
++button,input,select,textarea{font:inherit;color:inherit}
++button,select{background:var(--bg2);border:1px solid var(--bd);border-radius:6px;padding:5px 10px;cursor:pointer}
++button:hover,select:hover{background:var(--bg3)}
++button.primary{background:var(--ac);color:var(--acfg);border-color:var(--ac)}
++button.icon{padding:5px 8px;min-width:34px}
++button.danger{color:var(--dg)}
++button[aria-pressed=true]{background:var(--bg3);border-color:var(--ac)}
++:focus-visible{outline:2px solid var(--ac);outline-offset:1px}
++[hidden]{display:none!important}
++#app{display:grid;grid-template-columns:210px 310px 1fr;height:100%}
++#nav{background:var(--bg2);border-right:1px solid var(--bd);padding:14px;display:flex;flex-direction:column;gap:6px;overflow:auto}
++#nav h1{font-size:20px;margin:0 0 6px}
++#nav h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:14px 0 2px}
++#nav .spacer{flex:1}
++#nav .row{display:flex;justify-content:space-between;align-items:center;gap:8px;color:var(--mut)}
++.navitem{display:flex;justify-content:space-between;width:100%;text-align:left;background:none;border:0;padding:5px 8px}
++.navitem[aria-current=true]{background:var(--bg3);font-weight:600}
++.navitem span:last-child{color:var(--mut);font-size:12px}
++#listPane{border-right:1px solid var(--bd);display:flex;flex-direction:column;min-height:0}
++.bar{display:flex;gap:6px;padding:10px;align-items:center}
++.bar.sub{padding:0 10px 8px;justify-content:space-between;color:var(--mut);font-size:13px}
++#search,#title,#tagInput{flex:1;min-width:0;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:6px 10px}
++#title{font-size:20px;font-weight:600;border-color:transparent}
++#title:focus{border-color:var(--bd)}
++#list{list-style:none;margin:0;padding:0;overflow:auto;flex:1}
++#list li button{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--bd);border-radius:0;background:none;padding:10px 14px}
++#list li button:hover{background:var(--bg2)}
++#list li button[aria-current=true]{background:var(--bg3)}
++.t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.s{color:var(--mut);font-size:13px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
++.m{color:var(--mut);font-size:12px;margin-top:2px}
++.empty{color:var(--mut);text-align:center;padding:40px 20px}
++#editorPane{min-width:0;min-height:0;display:flex}
++#editor{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
++#tagInput{flex:none;margin:0 10px 8px;font-size:13px}
++#body{flex:1;resize:none;border:0;border-top:1px solid var(--bd);background:var(--bg);padding:14px 18px;font:15px/1.6 ui-monospace,Menlo,Consolas,monospace;min-height:0}
++#body:focus{outline:none}
++#preview{flex:1;overflow:auto;padding:14px 18px;border-top:1px solid var(--bd);word-break:break-word}
++#preview h1,#preview h2,#preview h3,#preview h4{margin:1em 0 .4em}
++#preview pre{background:var(--bg2);padding:10px;border-radius:6px;overflow:auto}
++#preview code{background:var(--bg2);padding:1px 4px;border-radius:4px}
++#preview pre code{padding:0;background:none}
++#preview blockquote{margin:0;padding-left:12px;border-left:3px solid var(--bd);color:var(--mut)}
++#preview ul.tasks{list-style:none;padding-left:4px}
++#preview a{color:var(--ac)}
++#status{font-size:12px;color:var(--mut);padding:4px 14px;border-top:1px solid var(--bd)}
++#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;display:flex;gap:12px;align-items:center;z-index:10;box-shadow:0 4px 16px #0004}
++#toast button{background:none;border:0;color:var(--ac);font-weight:700;padding:0 4px}
++dialog{background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:10px;max-width:480px}
++dialog dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px}
++dialog dt{font-weight:600}dialog dd{margin:0}
++.mobile-only{display:none}
++@media(max-width:900px){
++  #app{grid-template-columns:1fr}
++  #nav,#listPane,#editorPane{display:none;border:0}
++  #app[data-pane=nav] #nav,#app[data-pane=list] #listPane,#app[data-pane=editor] #editorPane{display:flex}
++  .mobile-only{display:inline-block}
++  #title{font-size:17px}
++}
++@media(prefers-reduced-motion:no-preference){button{transition:background .15s}}

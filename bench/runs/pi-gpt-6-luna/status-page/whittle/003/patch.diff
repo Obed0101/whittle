@@ -1,0 +1,145 @@
+diff --git a/app/page.py b/app/page.py
+new file mode 100644
+index 0000000..339d01a
+--- /dev/null
++++ b/app/page.py
+@@ -0,0 +1,139 @@
++"""Render a self-contained public service status page."""
++import html
++import json
++import re
++import sys
++from datetime import datetime, timezone
++
++
++LABELS = {
++    "operational": "Operational",
++    "degraded": "Degraded performance",
++    "outage": "Major outage",
++    "maintenance": "Under maintenance",
++}
++SEVERITY = {"outage": 0, "degraded": 1, "maintenance": 2, "operational": 3}
++
++
++def _escape(value):
++    return html.escape(str(value), quote=True)
++
++
++def _slug(name):
++    result = []
++    for char in str(name).lower():
++        if char.isalnum():
++            result.append(char)
++        elif result and result[-1] != "-":
++            result.append("-")
++    return "".join(result).strip("-")
++
++
++def render(services: list[dict], generated_at: str) -> str:
++    """Return an HTML status page for services."""
++    for service in services:
++        state = service["state"]
++        if state not in LABELS:
++            raise ValueError(f"unknown state: {state}")
++
++    total = len(services)
++    operational = sum(s["state"] == "operational" for s in services)
++    lines = [
++        "<!doctype html>",
++        '<html lang="en">',
++        "<head>",
++        '<meta charset="utf-8">',
++        '<meta name="viewport" content="width=device-width, initial-scale=1">',
++    ]
++    title = f"Status · {operational} of {total} operational" if total else "Status · no services"
++    lines.extend([f"<title>{_escape(title)}</title>", "<style>", _CSS, "</style>", "</head>", "<body>", "<header><h1>System status</h1></header>"])
++
++    if services:
++        down = any(s["state"] == "outage" for s in services)
++        degraded = any(s["state"] == "degraded" for s in services)
++        attention = sum(s["state"] in ("outage", "degraded") for s in services)
++        maintenance = sum(s["state"] == "maintenance" for s in services)
++        modifier = "down" if down else "warn" if degraded else "ok"
++        if attention:
++            message = f"{attention} of {total} services {'needs' if attention == 1 else 'need'} attention"
++        else:
++            message = "All systems operational"
++        if maintenance:
++            message += f" · {maintenance} under maintenance"
++        lines.append(f'<div class="banner banner--{modifier}" role="status">{_escape(message)}</div>')
++        lines.append('<main><ul class="services">')
++        ordered = sorted(services, key=lambda s: (SEVERITY[s["state"]], str(s["name"]).casefold()))
++        for service in ordered:
++            state = service["state"]
++            name = _escape(service["name"])
++            lines.append(f'<li class="service" id="service-{_escape(_slug(service["name"]))}" data-state="{_escape(state)}">')
++            lines.append('<span class="dot" aria-hidden="true"></span>')
++            if service.get("url"):
++                url = _escape(service["url"])
++                rel = ' rel="noopener"' if re.match(r"^https?://", str(service["url"]), re.IGNORECASE) else ""
++                lines.append(f'<h2><a href="{url}"{rel}>{name}</a></h2>')
++            else:
++                lines.append(f"<h2>{name}</h2>")
++            lines.append(f'<span class="state">{LABELS[state]}</span>')
++            if service.get("note"):
++                lines.append(f'<p class="note">{_escape(service["note"])}</p>')
++            if service.get("uptime") is not None:
++                lines.append(f'<span class="uptime">{float(service["uptime"]):.2f}% uptime</span>')
++            lines.append("</li>")
++        lines.extend(["</ul></main>"])
++    else:
++        lines.append('<main><p class="empty">No services configured.</p></main>')
++
++    timestamp = _escape(generated_at)
++    lines.extend([f'<footer><time datetime="{timestamp}">Updated {timestamp}</time></footer>', "</body>", "</html>"])
++    return "\n".join(lines)
++
++
++_CSS = """ :root {
++  --bg: #f5f7fa;
++  --text: #182230;
++  --ok: #16803c;
++  --warn: #a15c00;
++  --down: #c62828;
++  --maint: #6656a3;
++}
++@media (prefers-color-scheme: dark) {
++  :root { --bg: #151a22; --text: #edf2f7; --ok: #65d98b; --warn: #ffca70; --down: #ff7777; --maint: #b9a8ff; }
++}
++* { box-sizing: border-box; }
++body { margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
++header, main, footer, .banner { width: 100%; max-width: 640px; margin-left: auto; margin-right: auto; }
++h1 { margin: 0 0 1.25rem; }
++.banner { padding: 1rem; margin-bottom: 1rem; border-radius: .5rem; font-weight: 650; }
++.banner--ok { background: color-mix(in srgb, var(--ok) 14%, var(--bg)); }
++.banner--warn { background: color-mix(in srgb, var(--warn) 16%, var(--bg)); }
++.banner--down { background: color-mix(in srgb, var(--down) 16%, var(--bg)); }
++.services { max-width: 640px; margin: 0 auto; padding: 0; list-style: none; }
++.service { display: flex; align-items: center; gap: .8rem; padding: 1rem; margin-bottom: .75rem; border: 1px solid color-mix(in srgb, var(--text) 16%, transparent); border-radius: .5rem; }
++.service h2 { flex: 1; margin: 0; font-size: 1rem; }
++.state, .uptime { white-space: nowrap; }
++.note { flex-basis: 100%; margin: .4rem 0 0 1.7rem; }
++.dot { width: .7rem; height: .7rem; flex: 0 0 .7rem; border-radius: 50%; background: var(--text); }
++[data-state="operational"] .dot { background: var(--ok); }
++[data-state="degraded"] .dot { background: var(--warn); }
++[data-state="outage"] .dot { background: var(--down); animation: pulse 1.5s ease-in-out infinite; }
++[data-state="maintenance"] .dot { background: var(--maint); }
++@keyframes pulse { 50% { opacity: .35; } }
++@media (prefers-reduced-motion: reduce) { [data-state="outage"] .dot { animation: none; } }
++a { color: inherit; }
++a:focus-visible { outline: 3px solid var(--warn); outline-offset: 3px; }
++.empty { text-align: center; padding: 2rem 0; }
++footer { margin-top: 2rem; opacity: .75; font-size: .9rem; }
++@media (max-width: 480px) { .service { flex-direction: column; align-items: flex-start; } .note { margin-left: 0; } }
++"""
++
++
++def main():
++    with open(sys.argv[1], encoding="utf-8") as handle:
++        services = json.load(handle)
++    generated_at = datetime.now(timezone.utc).isoformat()
++    print(render(services, generated_at))
++
++
++if __name__ == "__main__":
++    main()

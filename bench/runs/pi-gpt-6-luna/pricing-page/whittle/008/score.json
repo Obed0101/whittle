@@ -1,0 +1,29 @@
+{
+  "task": "pricing-page",
+  "arm": "whittle",
+  "run": "008",
+  "checks": 26,
+  "passed": 23,
+  "missed": [
+    "test_b07_billing_switch_is_a_real_control",
+    "test_b09_price_change_is_announced",
+    "test_b14_table_is_readable_by_screen_readers"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 29,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 91.9,
+    "tokens": {
+      "input": 10549,
+      "output": 4536,
+      "cacheRead": 10240,
+      "cost": 0.003425
+    },
+    "turns": 6,
+    "tool_calls": 5
+  }
+}

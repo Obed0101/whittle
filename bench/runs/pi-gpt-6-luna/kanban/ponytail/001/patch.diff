@@ -1,0 +1,115 @@
+diff --git a/board/app.js b/board/app.js
+new file mode 100644
+index 0000000..2efa01a
+--- /dev/null
++++ b/board/app.js
+@@ -0,0 +1,46 @@
++(() => {
++  const columns = [{id:'backlog',name:'To do'},{id:'progress',name:'In progress'},{id:'review',name:'Up next'},{id:'done',name:'Done'}];
++  const seed = [
++    {id:'a1',title:'Plan the week ahead',notes:'Pick the three things that would make this week feel good.',status:'backlog',priority:'medium',due:'',created:1},
++    {id:'a2',title:'Book dentist appointment',notes:'Find a slot for next month.',status:'backlog',priority:'low',due:'',created:2},
++    {id:'a3',title:'Finish reading — The Creative Act',notes:'A few chapters left. Make a little time to read.',status:'backlog',priority:'none',due:'',created:3},
++    {id:'a4',title:'Draft project proposal',notes:'Get a first pass down; it doesn’t need to be perfect.',status:'progress',priority:'high',due:'',created:4},
++    {id:'a5',title:'Go for a run',notes:'Even a short one counts.',status:'progress',priority:'medium',due:'',created:5},
++    {id:'a6',title:'Sort out summer trip ideas',notes:'Save a few places that look interesting.',status:'review',priority:'low',due:'',created:6},
++    {id:'a7',title:'Clear the kitchen counter',notes:'',status:'done',priority:'none',due:'',created:7}
++  ];
++  const key='dayboard-tasks-v1'; let tasks;
++  try { tasks=JSON.parse(localStorage.getItem(key)) ?? seed; if(!Array.isArray(tasks)) tasks=seed; } catch { tasks=seed; }
++  const board=document.querySelector('#board'), dialog=document.querySelector('#taskDialog'), form=document.querySelector('#taskForm');
++  const escapeHtml=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
++  let filter='all', query='', dragged=null, toastTimer;
++  const save=()=>{try{localStorage.setItem(key,JSON.stringify(tasks))}catch{notify('Could not save — browser storage is full.')}};
++  const dateLabel=date=>{const d=new Date(date+'T12:00:00'), today=new Date();today.setHours(0,0,0,0);const day=new Date(d);day.setHours(0,0,0,0);const diff=Math.round((day-today)/86400000);return diff===0?'Today':diff===1?'Tomorrow':diff<0?`${Math.abs(diff)}d overdue`:d.toLocaleDateString(undefined,{month:'short',day:'numeric'})};
++  const render=()=>{
++    const term=query.toLowerCase(); const shown=tasks.filter(t=>{const match=!term||`${t.title} ${t.notes}`.toLowerCase().includes(term);const f=filter==='all'||(filter==='high'&&t.priority==='high')||(filter==='due'&&t.due&&t.status!=='done'&&new Date(t.due+'T23:59:59')<=Date.now()+7*86400000);return match&&f;});
++    document.querySelector('#allCount').textContent=tasks.filter(t=>t.status!=='done').length;
++    board.innerHTML=columns.map(col=>{const items=shown.filter(t=>t.status===col.id).sort((a,b)=>(a.created||0)-(b.created||0));return `<section class="column" data-column="${col.id}"><div class="column-head"><div class="col-title"><i class="dot"></i>${col.name}<span class="count">${items.length}</span></div><button class="add-small" data-add="${col.id}" aria-label="Add task to ${col.name}" title="Add task">＋</button></div><div class="cards" data-drop="${col.id}">${items.length?items.map(cardHtml).join(''):`<div class="empty">${term||filter!=='all'?'No matching tasks':'Nothing here yet'}</div>`}</div></section>`}).join('');
++  };
++  function cardHtml(t){const due=t.due?dateLabel(t.due):'';const cls=t.status==='done'?'completed':'';const dueCls=t.status==='done'?'done':t.due&&new Date(t.due+'T23:59:59')<Date.now()?'overdue':t.due&&new Date(t.due+'T00:00:00')-Date.now()<86400000?'soon':'';return `<article class="card ${cls}" draggable="true" data-id="${escapeHtml(t.id)}"><div class="card-top"><span class="tag ${t.priority}">${t.priority==='none'?'NO PRIORITY':t.priority.toUpperCase()}</span><button class="card-menu" data-edit="${escapeHtml(t.id)}" aria-label="Edit ${escapeHtml(t.title)}">···</button></div><h3>${escapeHtml(t.title)}</h3>${t.notes?`<p>${escapeHtml(t.notes)}</p>`:''}<div class="card-foot"><span class="due ${dueCls}">${due?`◷ ${due}`:''}</span><button class="check" data-complete="${escapeHtml(t.id)}" aria-label="${t.status==='done'?'Reopen':'Mark complete'}">${t.status==='done'?'✓':''}</button></div></article>`}
++  function openTask(task=null,status='backlog'){form.reset();document.querySelector('#taskId').value=task?.id||'';document.querySelector('#dialogTitle').textContent=task?'Edit task':'Add a task';document.querySelector('#taskName').value=task?.title||'';document.querySelector('#taskNotes').value=task?.notes||'';document.querySelector('#taskStatus').innerHTML=columns.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');document.querySelector('#taskStatus').value=task?.status||status;document.querySelector('#taskPriority').value=task?.priority||'none';document.querySelector('#taskDue').value=task?.due||'';document.querySelector('#deleteTask').classList.toggle('hidden',!task);dialog.showModal();document.querySelector('#taskName').focus()}
++  function notify(message){const el=document.querySelector('#toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),2200)}
++  document.querySelector('#today').textContent=new Date().toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'}).toUpperCase();
++  document.querySelector('#taskStatus').innerHTML=columns.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
++  render();
++  document.querySelector('#addTask').onclick=()=>openTask();
++  document.querySelector('#closeDialog').onclick=document.querySelector('#cancelDialog').onclick=()=>dialog.close();
++  form.onsubmit=e=>{e.preventDefault();const id=document.querySelector('#taskId').value, old=tasks.find(t=>t.id===id);const task={id:id||crypto.randomUUID(),title:document.querySelector('#taskName').value.trim(),notes:document.querySelector('#taskNotes').value.trim(),status:document.querySelector('#taskStatus').value,priority:document.querySelector('#taskPriority').value,due:document.querySelector('#taskDue').value,created:old?.created||Date.now()};if(!task.title)return;if(old)tasks[tasks.indexOf(old)]=task;else tasks.push(task);save();render();dialog.close();notify(old?'Task updated':'Task added')};
++  board.addEventListener('click',e=>{const add=e.target.closest('[data-add]'),edit=e.target.closest('[data-edit]'),check=e.target.closest('[data-complete]');if(add)openTask(null,add.dataset.add);if(edit)openTask(tasks.find(t=>t.id===edit.dataset.edit));if(check){const t=tasks.find(t=>t.id===check.dataset.complete);t.status=t.status==='done'?'backlog':'done';save();render()}});
++  document.querySelector('#deleteTask').onclick=()=>{const id=document.querySelector('#taskId').value;tasks=tasks.filter(t=>t.id!==id);save();render();dialog.close();notify('Task deleted')};
++  board.addEventListener('dragstart',e=>{const card=e.target.closest('.card');if(card){dragged=card.dataset.id;card.classList.add('dragging');e.dataTransfer.setData('text/plain',dragged);e.dataTransfer.effectAllowed='move'}});
++  board.addEventListener('dragend',e=>{e.target.closest('.card')?.classList.remove('dragging');board.querySelectorAll('.drag-over').forEach(x=>x.classList.remove('drag-over'))});
++  board.addEventListener('dragover',e=>{const drop=e.target.closest('[data-drop]');if(drop){e.preventDefault();drop.classList.add('drag-over')}});
++  board.addEventListener('dragleave',e=>{if(!e.target.closest('[data-drop]')?.contains(e.relatedTarget))e.target.closest('[data-drop]')?.classList.remove('drag-over')});
++  board.addEventListener('drop',e=>{const drop=e.target.closest('[data-drop]');if(!drop)return;e.preventDefault();const t=tasks.find(t=>t.id===(dragged||e.dataTransfer.getData('text/plain')));if(t){t.status=drop.dataset.drop;save();render()}dragged=null});
++  document.querySelector('#search').oninput=e=>{query=e.target.value.trim();render()};
++  document.querySelector('.filters').onclick=e=>{const b=e.target.closest('[data-filter]');if(!b)return;filter=b.dataset.filter;document.querySelectorAll('.filter').forEach(x=>x.classList.toggle('active',x===b));render()};
++  document.querySelector('#clearDone').onclick=()=>{const n=tasks.filter(t=>t.status==='done').length;if(n&&confirm(`Clear ${n} completed task${n===1?'':'s'}?`)){tasks=tasks.filter(t=>t.status!=='done');save();render();notify('Completed tasks cleared')}};
++  document.querySelector('#resetBoard').onclick=()=>{if(confirm('Reset the board to its original sample tasks? This replaces your tasks.')){tasks=structuredClone(seed);save();filter='all';query='';document.querySelector('#search').value='';document.querySelectorAll('.filter').forEach(x=>x.classList.toggle('active',x.dataset.filter==='all'));render();notify('Board reset')}};
++  document.querySelector('#themeButton').onclick=()=>{document.body.classList.toggle('dark');localStorage.setItem('dayboard-dark',document.body.classList.contains('dark')?'1':'0')};if(localStorage.getItem('dayboard-dark')==='1')document.body.classList.add('dark');
++  document.addEventListener('keydown',e=>{if(e.key==='/'&&!['INPUT','TEXTAREA'].includes(document.activeElement.tagName)&&!dialog.open){e.preventDefault();document.querySelector('#search').focus()}if(e.key==='Escape'&&dialog.open)dialog.close()});
++})();
+diff --git a/board/index.html b/board/index.html
+new file mode 100644
+index 0000000..a54653d
+--- /dev/null
++++ b/board/index.html
+@@ -0,0 +1,47 @@
++<!doctype html>
++<html lang="en">
++<head>
++  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
++  <meta name="theme-color" content="#f5f6f8"><title>Dayboard — your work, in view</title>
++  <link rel="stylesheet" href="style.css">
++</head>
++<body>
++  <header class="topbar">
++    <a class="brand" href="#" aria-label="Dayboard home"><span class="brand-mark">d</span><span>dayboard</span></a>
++    <div class="top-actions">
++      <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search tasks…" aria-label="Search tasks"><kbd>/</kbd></label>
++      <button class="icon-button" id="themeButton" title="Toggle dark mode" aria-label="Toggle dark mode">◐</button>
++      <button class="avatar" title="Personal workspace">J</button>
++    </div>
++  </header>
++  <main>
++    <section class="welcome">
++      <div><div class="eyebrow" id="today"></div><h1>Your board<span class="period">.</span></h1><p class="subtitle">A little progress, every day.</p></div>
++      <button class="primary" id="addTask"><span>＋</span> Add task</button>
++    </section>
++    <section class="toolbar" aria-label="Board controls">
++      <div class="filters" role="group" aria-label="Filter by priority">
++        <button class="filter active" data-filter="all">All tasks <span id="allCount">0</span></button>
++        <button class="filter" data-filter="high">High priority</button>
++        <button class="filter" data-filter="due">Due soon</button>
++      </div>
++      <div class="toolbar-right"><span class="saved"><i></i> Saved on this device</span><button class="text-button" id="clearDone">Clear completed</button></div>
++    </section>
++    <section class="board" id="board" aria-label="Kanban board"></section>
++    <footer><span>Make space for what matters.</span><button id="resetBoard" class="text-button">Reset sample board</button></footer>
++  </main>
++  <dialog id="taskDialog">
++    <form id="taskForm">
++      <div class="dialog-head"><div><div class="eyebrow">TASK DETAILS</div><h2 id="dialogTitle">Add a task</h2></div><button type="button" class="close" id="closeDialog" aria-label="Close">×</button></div>
++      <input type="hidden" id="taskId">
++      <label class="field">Task name<input id="taskName" required maxlength="120" placeholder="What needs doing?"></label>
++      <label class="field">Notes <span class="optional">OPTIONAL</span><textarea id="taskNotes" rows="3" maxlength="500" placeholder="Add a little context…"></textarea></label>
++      <div class="form-row"><label class="field">Status<select id="taskStatus"></select></label><label class="field">Priority<select id="taskPriority"><option value="none">No priority</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label></div>
++      <label class="field">Due date <span class="optional">OPTIONAL</span><input id="taskDue" type="date"></label>
++      <div class="dialog-actions"><button type="button" class="danger hidden" id="deleteTask">Delete task</button><span></span><button type="button" class="secondary" id="cancelDialog">Cancel</button><button class="primary" type="submit">Save task</button></div>
++    </form>
++  </dialog>
++  <div id="toast" role="status" aria-live="polite"></div>
++  <script src="app.js"></script>
++</body>
++</html>
+diff --git a/board/style.css b/board/style.css
+new file mode 100644
+index 0000000..7706cb9
+--- /dev/null
++++ b/board/style.css
+@@ -0,0 +1,4 @@
++@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
++:root{font-family:'DM Sans',sans-serif;color:#23252d;background:#f6f7f9;font-synthesis:none;--ink:#23252d;--muted:#898d98;--line:#e9eaee;--surface:#fff;--purple:#7158e2;--soft:#f0edff}*{box-sizing:border-box}body{margin:0;min-width:320px}.topbar{height:70px;background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 max(calc((100vw - 1180px)/2),32px)}.brand{display:flex;gap:10px;align-items:center;color:var(--ink);font-weight:700;text-decoration:none;letter-spacing:-.4px;font-size:17px}.brand-mark{display:grid;place-items:center;width:29px;height:29px;background:var(--purple);color:white;border-radius:9px;font:800 19px Manrope,sans-serif}.top-actions{display:flex;gap:17px;align-items:center}.search{width:240px;height:36px;border:1px solid var(--line);border-radius:8px;display:flex;align-items:center;padding:0 9px;gap:8px;color:#9295a0}.search>span{font-size:23px;line-height:1}.search input{border:0;outline:0;min-width:0;flex:1;font:13px inherit;background:transparent;color:var(--ink)}kbd{font:11px inherit;border:1px solid var(--line);padding:1px 5px;border-radius:4px}.icon-button,.avatar,.close{border:0;background:transparent;color:#666a75;cursor:pointer}.icon-button{font-size:21px}.avatar{width:29px;height:29px;border-radius:50%;background:#f6d8be;color:#794c34;font-weight:700}main{max-width:1180px;margin:0 auto;padding:55px 32px 30px}.welcome{display:flex;justify-content:space-between;align-items:center}.eyebrow{text-transform:uppercase;letter-spacing:1.35px;font-size:10px;font-weight:700;color:#9a9daa}.welcome h1{font:700 35px Manrope,sans-serif;letter-spacing:-1.4px;margin:7px 0 2px}.period{color:var(--purple)}.subtitle{margin:0;color:#888c97;font-size:14px}.primary,.secondary{border:0;border-radius:7px;padding:10px 15px;font:600 13px 'DM Sans',sans-serif;cursor:pointer}.primary{background:var(--purple);color:white;box-shadow:0 3px 7px #7158e233}.primary:hover{background:#6045d1}.primary span{font-size:16px;vertical-align:-1px;margin-right:4px}.toolbar{margin-top:41px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}.filters{display:flex;gap:23px}.filter{position:relative;background:transparent;border:0;padding:0 0 13px;color:#9295a0;font:500 12px 'DM Sans',sans-serif;cursor:pointer}.filter.active{color:var(--ink);font-weight:700}.filter.active:after{content:'';position:absolute;bottom:-1px;left:0;right:0;height:2px;border-radius:2px;background:var(--purple)}.filter span{margin-left:5px;padding:2px 6px;border-radius:10px;background:#efeff2;color:#777b86;font-size:10px}.toolbar-right{display:flex;align-items:center;gap:19px;padding-bottom:11px}.saved{font-size:11px;color:#999ca5}.saved i{display:inline-block;width:6px;height:6px;background:#55b88a;border-radius:50%;margin-right:5px}.text-button{border:0;background:transparent;color:#898d98;font:500 11px 'DM Sans',sans-serif;cursor:pointer}.text-button:hover{color:var(--purple)}.board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px;margin-top:24px;align-items:start}.column{min-width:0}.column-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding:0 2px}.col-title{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700}.dot{width:8px;height:8px;border-radius:50%}.column:nth-child(1) .dot{background:#a5a8b2}.column:nth-child(2) .dot{background:#e9a84b}.column:nth-child(3) .dot{background:#7b67e9}.column:nth-child(4) .dot{background:#54b88a}.count{font-size:10px;color:#9295a0;background:#eeeff2;padding:2px 7px;border-radius:10px}.add-small{border:0;background:none;color:#9b9eaa;font-size:19px;line-height:1;cursor:pointer}.add-small:hover{color:var(--purple)}.cards{min-height:75px;border-radius:9px;transition:background .15s}.cards.drag-over{background:#eeebfb}.card{background:var(--surface);border:1px solid #e9eaee;border-radius:8px;padding:14px;margin-bottom:9px;box-shadow:0 2px 5px #20243805;cursor:grab;transition:box-shadow .15s,transform .15s}.card:hover{box-shadow:0 5px 15px #20243810;transform:translateY(-1px)}.card.dragging{opacity:.4}.card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}.tag{font-size:9px;font-weight:700;letter-spacing:.2px;border-radius:4px;padding:4px 7px}.tag.high{color:#cf6262;background:#fff0ef}.tag.medium{color:#bc8a31;background:#fff7e6}.tag.low{color:#518d76;background:#eaf7f1}.tag.none{color:#9295a0;background:#f2f3f5}.card-menu{border:0;background:none;color:#a4a6af;cursor:pointer;font-size:18px;line-height:12px;padding:0 2px}.card h3{margin:0 0 5px;font-size:13px;line-height:1.45;font-weight:600;letter-spacing:-.1px}.card p{margin:0;color:#9295a0;font-size:11px;line-height:1.5}.card-foot{display:flex;align-items:center;justify-content:space-between;margin-top:14px;color:#a0a3ad;font-size:10px}.due{display:flex;align-items:center;gap:5px}.due.overdue{color:#d15f5f}.due.soon{color:#bf8a35}.due.done{color:#61a285}.check{width:16px;height:16px;border:1px solid #d8dae0;border-radius:50%;background:transparent;cursor:pointer;color:white;font-size:10px;padding:0}.check:hover{border-color:var(--purple)}.completed .check{background:#58b78b;border-color:#58b78b}.completed h3{text-decoration:line-through;color:#999}.completed .tag{opacity:.65}.empty{padding:17px 8px;color:#a4a6b0;font-size:11px;text-align:center;border:1px dashed #e2e3e9;border-radius:8px}.column.drag-target .cards{background:#eeebfb}footer{border-top:1px solid var(--line);margin-top:37px;padding-top:18px;display:flex;justify-content:space-between;color:#a0a3ad;font-size:11px}dialog{border:0;padding:0;border-radius:12px;width:min(440px,calc(100% - 30px));box-shadow:0 18px 60px #17182530;color:var(--ink)}dialog::backdrop{background:#17182566;backdrop-filter:blur(2px)}#taskForm{padding:25px}.dialog-head{display:flex;justify-content:space-between;margin-bottom:20px}.dialog-head h2{font:700 21px Manrope,sans-serif;margin:5px 0 0;letter-spacing:-.5px}.close{font-size:25px;align-self:flex-start}.field{display:block;font-size:11px;font-weight:600;margin:14px 0;color:#555966}.field input,.field textarea,.field select{display:block;width:100%;margin-top:7px;border:1px solid #e3e4e9;border-radius:6px;padding:10px;font:12px 'DM Sans',sans-serif;color:var(--ink);background:var(--surface);outline:none}.field input:focus,.field textarea:focus,.field select:focus{border-color:#9888ed;box-shadow:0 0 0 3px #7158e21a}.field textarea{resize:vertical}.optional{float:right;color:#a3a5ae;font-size:9px;letter-spacing:.6px}.form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}.dialog-actions{display:flex;align-items:center;gap:9px;margin-top:22px}.dialog-actions>span{flex:1}.secondary{background:#f1f2f5;color:#555966}.danger{border:0;background:none;color:#d15f5f;font:600 11px 'DM Sans',sans-serif;cursor:pointer}.hidden{display:none!important}#toast{position:fixed;bottom:22px;left:50%;transform:translate(-50%,15px);padding:10px 16px;border-radius:7px;background:#282a32;color:white;font-size:12px;opacity:0;pointer-events:none;transition:.2s}#toast.show{opacity:1;transform:translate(-50%,0)}body.dark{--ink:#eeeef2;--muted:#9294a0;--line:#30313a;--surface:#23242c;background:#191a20;color:var(--ink)}body.dark .topbar{background:var(--surface)}body.dark .card{border-color:#32333c;box-shadow:none}body.dark .filter span,body.dark .count{background:#33343d;color:#bbb}body.dark .search{border-color:#393a43}body.dark .search input,body.dark .field input,body.dark .field textarea,body.dark .field select{color:var(--ink)}body.dark .field input,body.dark .field textarea,body.dark .field select{border-color:#393a43}body.dark .secondary{background:#383942;color:#ddd}body.dark .tag.none{background:#33343d}body.dark .empty{border-color:#383942}
++@media(max-width:800px){main{padding:40px 22px 25px}.board{grid-template-columns:repeat(2,minmax(0,1fr));row-gap:25px}.toolbar{margin-top:32px}.topbar{padding:0 22px}}
++@media(max-width:520px){.topbar{height:60px;padding:0 16px}.top-actions{gap:10px}.search{width:34px;border:0;padding:0 5px}.search input,.search kbd{display:none}.search:focus-within{position:absolute;right:86px;width:calc(100% - 160px);background:var(--surface);border:1px solid var(--line);padding:0 9px;z-index:2}.search:focus-within input{display:block}.search:focus-within kbd{display:block}main{padding:34px 16px 22px}.welcome h1{font-size:30px}.welcome .primary{padding:9px 11px}.toolbar{align-items:flex-start;gap:8px}.filters{gap:14px}.filter{font-size:11px}.toolbar-right{gap:0}.saved{display:none}.board{grid-template-columns:1fr;gap:19px}.column-head{margin-bottom:8px}.cards{display:grid;grid-template-columns:1fr;gap:0}footer{margin-top:25px}}

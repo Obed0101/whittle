@@ -1,0 +1,27 @@
+{
+  "task": "kanban",
+  "arm": "whittle",
+  "run": "002",
+  "checks": 40,
+  "passed": 37,
+  "missed": [
+    "test_k31_reorder_columns",
+    "test_k38_sort_cards",
+    "test_k40_reset_or_clear_board"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 468,
+  "agent": {
+    "harness": "claude",
+    "model": "claude-sonnet-5-5",
+    "exit": 0,
+    "seconds": 125.5,
+    "tokens": {
+      "input": 23302,
+      "output": 19291,
+      "cacheRead": 74658,
+      "cost": 0.301038
+    },
+    "turns": 5
+  }
+}

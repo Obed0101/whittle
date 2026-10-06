@@ -1,0 +1,440 @@
+diff --git a/board/app.js b/board/app.js
+new file mode 100644
+index 0000000..b675e7a
+--- /dev/null
++++ b/board/app.js
+@@ -0,0 +1,320 @@
++'use strict';
++const KEY = 'kanban.data', VERSION = 1;
++const COLORS = ['#e5484d', '#f76b15', '#b88700', '#30a46c', '#0091ff', '#8e4ec6', '#6e7781'];
++const $ = s => document.querySelector(s);
++const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
++const h = (t, a = {}, ...k) => {
++  const e = document.createElement(t);
++  for (const [n, v] of Object.entries(a)) {
++    if (n === 'class') e.className = v;
++    else if (n.startsWith('on')) e.addEventListener(n.slice(2), v);
++    else if (v === true) e.setAttribute(n, '');
++    else if (v !== false && v != null) e.setAttribute(n, v);
++  }
++  for (const c of k.flat()) if (c != null && c !== false) e.append(c);
++  return e;
++};
++
++const defLabels = () => ['Bug', 'Feature', 'Chore'].map((name, i) => ({ id: uid(), name, color: COLORS[[0, 3, 4][i]] }));
++const newBoard = name => ({ id: uid(), name, labels: defLabels(), archive: [],
++  columns: ['To do', 'Doing', 'Done'].map(n => ({ id: uid(), name: n, wip: 0, cards: [] })) });
++const fixCard = c => ({ id: c.id || uid(), title: String(c.title || 'Untitled'), desc: String(c.desc || ''),
++  labels: Array.isArray(c.labels) ? c.labels : [], due: c.due || '', priority: c.priority || '',
++  checklist: (Array.isArray(c.checklist) ? c.checklist : []).map(i => ({ id: i.id || uid(), text: String(i.text || ''), done: !!i.done })),
++  created: c.created || Date.now(), from: c.from || '' });
++const fixBoard = b => ({ id: b.id || uid(), name: String(b.name || 'Board'),
++  labels: Array.isArray(b.labels) ? b.labels.map(l => ({ id: l.id || uid(), name: String(l.name || ''), color: l.color || COLORS[6] })) : defLabels(),
++  columns: (Array.isArray(b.columns) ? b.columns : []).map(c => ({ id: c.id || uid(), name: String(c.name || 'Column'), wip: +c.wip || 0,
++    cards: (Array.isArray(c.cards) ? c.cards : []).map(fixCard) })),
++  archive: (Array.isArray(b.archive) ? b.archive : []).map(fixCard) });
++// Migrates any older/unknown shape to the current version.
++function migrate(d) {
++  if (!d || typeof d !== 'object' || !Array.isArray(d.boards) || !d.boards.length) {
++    const b = newBoard('My board');
++    return { version: VERSION, boards: [b], active: b.id, theme: 'auto' };
++  }
++  const boards = d.boards.map(fixBoard);
++  return { version: VERSION, boards, theme: ['auto', 'light', 'dark'].includes(d.theme) ? d.theme : 'auto',
++    active: boards.some(b => b.id === d.active) ? d.active : boards[0].id };
++}
++function load() {
++  try { return migrate(JSON.parse(localStorage.getItem(KEY))); } catch { return migrate(null); }
++}
++
++let S = load(), undos = [], redos = [], addingCol = null, focusId = null, dragId = null, q = '', fl = '';
++const B = () => S.boards.find(b => b.id === S.active);
++const colOf = id => B().columns.find(c => c.id === id);
++function findCard(id) {
++  for (const col of B().columns) { const i = col.cards.findIndex(c => c.id === id); if (i >= 0) return { col, i, card: col.cards[i] }; }
++}
++function save() {
++  try { localStorage.setItem(KEY, JSON.stringify(S)); }
++  catch { toast('Could not save: browser storage is full or blocked. Export your data.'); }
++}
++const snap = () => JSON.stringify({ boards: S.boards, active: S.active });
++function restore(s) { Object.assign(S, JSON.parse(s)); save(); render(); }
++function mutate(fn, msg) {
++  undos.push(snap()); if (undos.length > 100) undos.shift(); redos = [];
++  fn(); save(); render(); if (msg) toast(msg, true);
++}
++function undo() { if (!undos.length) return; redos.push(snap()); restore(undos.pop()); }
++function redo() { if (!redos.length) return; undos.push(snap()); restore(redos.pop()); }
++
++let toastT;
++function toast(msg, withUndo) {
++  const t = $('#toast'); t.replaceChildren(msg);
++  if (withUndo) t.append(h('button', { onclick() { undo(); t.hidden = true; } }, 'Undo'));
++  t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 6000);
++}
++function ask(title, value = '', type = 'text') {
++  return new Promise(res => {
++    const d = $('#ask'), i = $('#askI');
++    $('#askT').textContent = title; i.type = type; i.value = value; d.returnValue = '';
++    d.onclose = () => res(d.returnValue === 'ok' ? i.value.trim() : null);
++    d.showModal(); i.select();
++  });
++}
++
++const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
++const fmtDate = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
++const soon = () => { const d = new Date(); d.setDate(d.getDate() + 2); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
++const PRI = { low: 'Low', med: 'Medium', high: 'High' };
++
++function match(c) {
++  if (fl && !c.labels.includes(fl)) return false;
++  return !q || (c.title + ' ' + c.desc + ' ' + c.checklist.map(i => i.text).join(' ')).toLowerCase().includes(q);
++}
++
++function cardEl(c) {
++  const bd = B(), t = today();
++  const labels = c.labels.map(id => bd.labels.find(l => l.id === id)).filter(Boolean);
++  const done = c.checklist.filter(i => i.done).length;
++  const el = h('div', { class: 'card' + (c.priority ? ' p-' + c.priority : ''), role: 'listitem', tabindex: 0, draggable: 'true', 'data-card': c.id,
++    'aria-label': c.title,
++    onclick: () => openCard(c.id),
++    ondragstart(e) { dragId = c.id; e.dataTransfer.setData('text/plain', c.id); e.dataTransfer.effectAllowed = 'move'; setTimeout(() => el.classList.add('dragging')); },
++    ondragend() { dragId = null; render(); },
++    onkeydown(e) { cardKey(e, c.id); } },
++    labels.length ? h('div', { class: 'chips' }, labels.map(l => h('span', { class: 'chip', style: `background:${l.color}` }, l.name))) : null,
++    h('div', {}, c.title),
++    (c.due || c.priority || c.checklist.length || c.desc) ? h('div', { class: 'meta' },
++      c.due ? h('span', { class: c.due < t ? 'late' : c.due <= soon() ? 'soon' : '' }, (c.due < t ? 'Overdue ' : 'Due ') + fmtDate(c.due)) : null,
++      c.priority ? h('span', {}, PRI[c.priority]) : null,
++      c.checklist.length ? h('span', {}, `☑ ${done}/${c.checklist.length}`) : null,
++      c.desc ? h('span', { title: 'Has notes' }, '≡') : null) : null);
++  return el;
++}
++
++function cardKey(e, id) {
++  if (e.target !== e.currentTarget) return;
++  if (e.key === 'Enter') { e.preventDefault(); openCard(id); return; }
++  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); removeCard(id); return; }
++  if (!e.altKey || !e.key.startsWith('Arrow')) return;
++  e.preventDefault();
++  const f = findCard(id), cols = B().columns, ci = cols.indexOf(f.col);
++  const dx = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0, dy = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;
++  focusId = id;
++  if (dx) {
++    const to = cols[ci + dx]; if (!to) return;
++    mutate(() => { f.col.cards.splice(f.i, 1); to.cards.splice(Math.min(f.i, to.cards.length), 0, f.card); });
++  } else {
++    const j = f.i + dy; if (j < 0 || j >= f.col.cards.length) return;
++    mutate(() => { f.col.cards.splice(f.i, 1); f.col.cards.splice(j, 0, f.card); });
++  }
++}
++
++function removeCard(id) {
++  const f = findCard(id); if (!f) return;
++  mutate(() => f.col.cards.splice(f.i, 1), 'Card deleted');
++}
++function moveCard(id, colId, beforeId) {
++  mutate(() => {
++    const f = findCard(id); if (!f) return;
++    f.col.cards.splice(f.i, 1);
++    const to = colOf(colId), j = beforeId ? to.cards.findIndex(c => c.id === beforeId) : -1;
++    to.cards.splice(j < 0 ? to.cards.length : j, 0, f.card);
++  });
++}
++
++const line = h('div', { class: 'drop-line' });
++function afterEl(list, y) {
++  return [...list.querySelectorAll('.card:not(.dragging)')].find(el => { const r = el.getBoundingClientRect(); return y < r.top + r.height / 2; });
++}
++
++function colEl(c, i) {
++  const bd = B(), shown = c.cards.filter(match), full = c.wip && c.cards.length > c.wip;
++  const list = h('div', { class: 'cards', role: 'list', 'aria-label': c.name },
++    shown, shown.length ? null : h('p', { class: 'empty' }, c.cards.length ? 'No matching cards' : 'No cards yet'));
++  const el = h('section', { class: 'col', 'aria-label': c.name,
++    ondragover(e) { if (!dragId) return; e.preventDefault(); el.classList.add('over'); const a = afterEl(list, e.clientY); a ? list.insertBefore(line, a) : list.append(line); },
++    ondragleave(e) { if (!el.contains(e.relatedTarget)) { el.classList.remove('over'); line.remove(); } },
++    ondrop(e) { if (!dragId) return; e.preventDefault(); const a = afterEl(list, e.clientY); const id = dragId; dragId = null; moveCard(id, c.id, a && a.dataset.card); } },
++    h('div', { class: 'col-h' },
++      h('h2', {}, c.name),
++      h('span', { class: 'count' + (full ? ' full' : ''), title: c.wip ? 'WIP limit ' + c.wip : '' }, c.wip ? `${c.cards.length}/${c.wip}` : c.cards.length),
++      h('button', { class: 'ic', 'aria-label': 'Move column left', title: 'Move left', disabled: i === 0, onclick: () => moveCol(c.id, -1) }, '◀'),
++      h('button', { class: 'ic', 'aria-label': 'Move column right', title: 'Move right', disabled: i === bd.columns.length - 1, onclick: () => moveCol(c.id, 1) }, '▶'),
++      h('button', { class: 'ic', 'aria-label': 'Rename column', title: 'Rename', async onclick() { const n = await ask('Column name', c.name); if (n) mutate(() => colOf(c.id).name = n); } }, '✎'),
++      h('button', { class: 'ic', 'aria-label': 'Set WIP limit', title: 'WIP limit (0 = none)', async onclick() { const n = await ask('WIP limit (0 for none)', c.wip, 'number'); if (n !== null) mutate(() => colOf(c.id).wip = Math.max(0, parseInt(n) || 0)); } }, '⊘'),
++      h('button', { class: 'ic', 'aria-label': 'Delete column', title: 'Delete column', onclick: () => mutate(() => bd.columns.splice(bd.columns.findIndex(x => x.id === c.id), 1), `Column "${c.name}" deleted`) }, '✕')),
++    list,
++    addingCol === c.id ? addForm(c.id) : h('button', { class: 'add-btn', onclick() { addingCol = c.id; render(); } }, '+ Add card'));
++  return el;
++}
++
++function addForm(colId) {
++  const input = h('input', { 'aria-label': 'Card title', placeholder: 'Card title…', maxlength: 300,
++    onkeydown(e) { if (e.key === 'Escape') { addingCol = null; render(); } } });
++  return h('form', { class: 'add', onsubmit(e) {
++    e.preventDefault(); const t = input.value.trim(); if (!t) return;
++    mutate(() => colOf(colId).cards.push(fixCard({ title: t })));
++  } }, input, h('button', { class: 'primary' }, 'Add'), h('button', { type: 'button', onclick() { addingCol = null; render(); } }, 'Cancel'));
++}
++
++function moveCol(id, d) {
++  mutate(() => { const cs = B().columns, i = cs.findIndex(c => c.id === id); [cs[i], cs[i + d]] = [cs[i + d], cs[i]]; });
++}
++
++function render() {
++  const bd = B(), root = document.documentElement;
++  root.dataset.theme = S.theme;
++  $('#themeBtn').textContent = { auto: '◐ Auto', light: '☀ Light', dark: '☾ Dark' }[S.theme];
++  $('#boardSel').replaceChildren(...S.boards.map(b => h('option', { value: b.id, selected: b.id === S.active }, b.name)));
++  if (fl && !bd.labels.some(l => l.id === fl)) fl = '';
++  $('#fl').replaceChildren(h('option', { value: '' }, 'All labels'), ...bd.labels.map(l => h('option', { value: l.id, selected: l.id === fl }, l.name || '(unnamed)')));
++  $('#delBoard').disabled = S.boards.length < 2;
++  $('#undoBtn').disabled = !undos.length; $('#redoBtn').disabled = !redos.length;
++  $('#archBtn').textContent = 'Archive' + (bd.archive.length ? ` (${bd.archive.length})` : '');
++  const main = $('#board'), x = main.scrollLeft;
++  main.replaceChildren(...bd.columns.map(colEl),
++    h('button', { class: 'add-col', async onclick() { const n = await ask('Column name'); if (n) mutate(() => bd.columns.push({ id: uid(), name: n, wip: 0, cards: [] })); } }, '+ Add column'));
++  main.scrollLeft = x;
++  if (addingCol) { const i = main.querySelector('.add input'); if (i) i.focus(); else addingCol = null; }
++  if (focusId) { const el = main.querySelector(`[data-card="${focusId}"]`); if (el) el.focus(); focusId = null; }
++}
++
++function openCard(id) {
++  const f = findCard(id); if (!f) return;
++  const bd = B(), d = structuredClone(f.card), dlg = $('#cardDlg'), form = $('#cardForm');
++  let colId = f.col.id;
++  const title = h('input', { value: d.title, required: true, maxlength: 300, oninput() { d.title = title.value; } });
++  const desc = h('textarea', { rows: 5, oninput() { d.desc = desc.value; } }, d.desc);
++  const cl = h('div');
++  const drawCL = () => cl.replaceChildren(...d.checklist.map(it => h('div', { class: 'ck' },
++    h('input', { type: 'checkbox', checked: it.done, 'aria-label': 'Done', onchange(e) { it.done = e.target.checked; } }),
++    h('input', { type: 'text', value: it.text, 'aria-label': 'Item', oninput(e) { it.text = e.target.value; } }),
++    h('button', { type: 'button', class: 'ic', 'aria-label': 'Remove item', onclick() { d.checklist.splice(d.checklist.indexOf(it), 1); drawCL(); } }, '✕'))));
++  const newItem = h('input', { placeholder: 'Add checklist item…', onkeydown(e) { if (e.key === 'Enter') { e.preventDefault(); addItem(); } } });
++  const addItem = () => { const t = newItem.value.trim(); if (!t) return; d.checklist.push({ id: uid(), text: t, done: false }); newItem.value = ''; drawCL(); newItem.focus(); };
++  drawCL();
++  form.replaceChildren(
++    h('label', {}, 'Title', title),
++    h('label', {}, 'Notes', desc),
++    h('div', { class: 'row' },
++      h('label', {}, 'Column', h('select', { onchange(e) { colId = e.target.value; } }, bd.columns.map(c => h('option', { value: c.id, selected: c.id === colId }, c.name)))),
++      h('label', {}, 'Priority', h('select', { onchange(e) { d.priority = e.target.value; } }, [['', 'None'], ['low', 'Low'], ['med', 'Medium'], ['high', 'High']].map(([v, n]) => h('option', { value: v, selected: v === d.priority }, n)))),
++      h('label', {}, 'Due date', h('input', { type: 'date', value: d.due, onchange(e) { d.due = e.target.value; } }))),
++    bd.labels.length ? h('div', { class: 'lbls', role: 'group', 'aria-label': 'Labels' }, bd.labels.map(l => h('label', {},
++      h('input', { type: 'checkbox', checked: d.labels.includes(l.id), onchange(e) { d.labels = d.labels.filter(x => x !== l.id); if (e.target.checked) d.labels.push(l.id); } }),
++      h('span', { class: 'chip', style: `background:${l.color}` }, l.name || '(unnamed)')))) : null,
++    h('div', { class: 'fld' }, 'Checklist', cl, h('div', { class: 'ck' }, newItem, h('button', { type: 'button', onclick: addItem }, 'Add'))),
++    h('div', { class: 'foot' },
++      h('button', { type: 'button', class: 'danger', onclick() { dlg.close(); removeCard(id); } }, 'Delete'),
++      h('button', { type: 'button', onclick() { dlg.close(); mutate(() => { const g = findCard(id); g.col.cards.splice(g.i, 1); g.card.from = g.col.name; bd.archive.unshift(g.card); }, 'Card archived'); } }, 'Archive'),
++      h('span', { class: 'grow' }),
++      h('button', { type: 'button', onclick: () => dlg.close() }, 'Cancel'),
++      h('button', { class: 'primary' }, 'Save')));
++  form.onsubmit = e => {
++    e.preventDefault(); d.title = title.value.trim() || 'Untitled';
++    d.checklist = d.checklist.filter(i => i.text.trim());
++    dlg.close();
++    mutate(() => {
++      const g = findCard(id); if (!g) return;
++      if (colId === g.col.id) g.col.cards[g.i] = d;
++      else { g.col.cards.splice(g.i, 1); colOf(colId).cards.push(d); }
++    });
++    focusId = id; render();
++  };
++  dlg.showModal();
++}
++
++function openLabels() {
++  const dlg = $('#labelsDlg'), form = $('#labelsForm'), draft = structuredClone(B().labels), list = h('div');
++  const draw = () => list.replaceChildren(...draft.map(l => h('div', { class: 'ar' },
++    h('input', { type: 'color', value: l.color, 'aria-label': 'Color', oninput(e) { l.color = e.target.value; } }),
++    h('input', { value: l.name, placeholder: 'Label name', 'aria-label': 'Label name', style: 'flex:1;min-width:0', oninput(e) { l.name = e.target.value; } }),
++    h('button', { type: 'button', class: 'ic', 'aria-label': 'Delete label', onclick() { draft.splice(draft.indexOf(l), 1); draw(); } }, '✕'))));
++  draw();
++  form.replaceChildren(h('h3', {}, 'Labels'), list,
++    h('div', { class: 'foot' },
++      h('button', { type: 'button', onclick() { draft.push({ id: uid(), name: '', color: COLORS[draft.length % COLORS.length] }); draw(); } }, '+ Label'),
++      h('span', { class: 'grow' }),
++      h('button', { type: 'button', onclick: () => dlg.close() }, 'Cancel'),
++      h('button', { class: 'primary' }, 'Save')));
++  form.onsubmit = e => {
++    e.preventDefault(); dlg.close();
++    mutate(() => {
++      const bd = B(), keep = new Set(draft.map(l => l.id));
++      bd.labels = draft.filter(l => l.name.trim() || true).map(l => ({ ...l, name: l.name.trim() }));
++      for (const c of [...bd.columns.flatMap(c => c.cards), ...bd.archive]) c.labels = c.labels.filter(x => keep.has(x));
++    });
++  };
++  dlg.showModal();
++}
++
++function openArchive() {
++  const dlg = $('#archDlg'), body = $('#archBody');
++  const draw = () => {
++    const bd = B();
++    body.replaceChildren(h('h3', {}, 'Archive'),
++      bd.archive.length ? bd.archive.map(c => h('div', { class: 'ar' },
++        h('span', {}, c.title, c.from ? h('small', { class: 'count' }, ` · from ${c.from}`) : null),
++        h('button', { onclick() {
++          mutate(() => { bd.archive.splice(bd.archive.indexOf(c), 1); (bd.columns.find(x => x.name === c.from) || bd.columns[0]).cards.push(c); });
++          if (B().archive.length) draw(); else dlg.close();
++        } }, 'Restore'),
++        h('button', { class: 'danger', onclick() { mutate(() => bd.archive.splice(bd.archive.indexOf(c), 1), 'Deleted permanently'); draw(); } }, 'Delete'))) : h('p', { class: 'empty' }, 'Nothing archived.'),
++      h('div', { class: 'foot' }, h('button', { onclick: () => dlg.close() }, 'Close')));
++  };
++  if (!B().columns.length) return toast('Add a column first');
++  draw(); dlg.showModal();
++}
++
++function exportData() {
++  const a = h('a', { href: URL.createObjectURL(new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' })), download: `kanban-${today()}.json` });
++  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
++}
++
++$('#boardSel').onchange = e => { S.active = e.target.value; save(); render(); };
++$('#newBoard').onclick = async () => { const n = await ask('Board name'); if (n) mutate(() => { const b = newBoard(n); S.boards.push(b); S.active = b.id; }); };
++$('#renBoard').onclick = async () => { const n = await ask('Board name', B().name); if (n) mutate(() => B().name = n); };
++$('#delBoard').onclick = () => {
++  const n = B().name;
++  mutate(() => { S.boards = S.boards.filter(b => b.id !== S.active); S.active = S.boards[0].id; }, `Board "${n}" deleted`);
++};
++$('#q').oninput = e => { q = e.target.value.trim().toLowerCase(); render(); };
++$('#fl').onchange = e => { fl = e.target.value; render(); };
++$('#undoBtn').onclick = undo; $('#redoBtn').onclick = redo;
++$('#labelsBtn').onclick = openLabels; $('#archBtn').onclick = openArchive; $('#expBtn').onclick = exportData;
++$('#themeBtn').onclick = () => { S.theme = { auto: 'light', light: 'dark', dark: 'auto' }[S.theme]; save(); render(); };
++$('#impBtn').onclick = () => $('#file').click();
++$('#file').onchange = async e => {
++  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
++  try {
++    const d = JSON.parse(await f.text());
++    if (!d || !Array.isArray(d.boards) || !d.boards.length) throw 0;
++    const m = migrate(d);
++    mutate(() => { S.boards = m.boards; S.active = m.active; }, 'Imported (replaced current boards)');
++  } catch { toast('That file is not a valid board export.'); }
++};
++document.addEventListener('keydown', e => {
++  if (document.querySelector('dialog[open]')) return;
++  const mod = e.ctrlKey || e.metaKey;
++  if (mod && e.key.toLowerCase() === 'z' && !/INPUT|TEXTAREA/.test(e.target.tagName)) { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
++  if (mod && e.key.toLowerCase() === 'y' && !/INPUT|TEXTAREA/.test(e.target.tagName)) { e.preventDefault(); redo(); return; }
++  if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || mod || e.altKey) return;
++  if (e.key === '/') { e.preventDefault(); $('#q').focus(); }
++  else if (e.key === 'n' && B().columns.length) { e.preventDefault(); addingCol = B().columns[0].id; render(); }
++});
++window.addEventListener('storage', e => { if (e.key === KEY) { S = load(); render(); } });
++render();
+diff --git a/board/index.html b/board/index.html
+new file mode 100644
+index 0000000..b23eba7
+--- /dev/null
++++ b/board/index.html
+@@ -0,0 +1,43 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<meta name="color-scheme" content="light dark">
++<title>Kanban</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<header>
++  <select id="boardSel" aria-label="Board"></select>
++  <button id="newBoard" title="New board">+ Board</button>
++  <button id="renBoard" title="Rename board">Rename</button>
++  <button id="delBoard" title="Delete board">Delete</button>
++  <input id="q" type="search" placeholder="Search ( / )" aria-label="Search cards">
++  <select id="fl" aria-label="Filter by label"></select>
++  <span class="grow"></span>
++  <button id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
++  <button id="redoBtn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
++  <button id="labelsBtn">Labels</button>
++  <button id="archBtn">Archive</button>
++  <button id="expBtn">Export</button>
++  <button id="impBtn">Import</button>
++  <button id="themeBtn" title="Theme"></button>
++  <input id="file" type="file" accept="application/json,.json" hidden>
++</header>
++<main id="board" aria-label="Board columns"></main>
++<p class="hint">Drag cards, or focus one and press Alt+Arrow keys to move it. Enter opens it. Press n to add a card, / to search.</p>
++<div id="toast" role="status" aria-live="polite" hidden></div>
++
++<dialog id="ask">
++  <form method="dialog">
++    <label><span id="askT"></span><input id="askI" min="0"></label>
++    <div class="foot"><button value="cancel" formnovalidate>Cancel</button><button value="ok" class="primary">OK</button></div>
++  </form>
++</dialog>
++<dialog id="cardDlg"><form id="cardForm"></form></dialog>
++<dialog id="labelsDlg"><form id="labelsForm"></form></dialog>
++<dialog id="archDlg"><div id="archBody"></div></dialog>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/board/style.css b/board/style.css
+new file mode 100644
+index 0000000..e3564c8
+--- /dev/null
++++ b/board/style.css
+@@ -0,0 +1,59 @@
++:root{--bg:#f4f5f7;--col:#e6e8ec;--card:#fff;--text:#1d2026;--mute:#667085;--line:#cfd4dc;--accent:#2563eb;--danger:#d92d20;--warn:#b54708;color-scheme:light}
++:root[data-theme=dark]{--bg:#14161a;--col:#1e2127;--card:#272b33;--text:#e8eaee;--mute:#9aa3b2;--line:#3a4049;--accent:#6ea0ff;--danger:#ff7066;--warn:#f5b04a;color-scheme:dark}
++@media (prefers-color-scheme:dark){:root[data-theme=auto]{--bg:#14161a;--col:#1e2127;--card:#272b33;--text:#e8eaee;--mute:#9aa3b2;--line:#3a4049;--accent:#6ea0ff;--danger:#ff7066;--warn:#f5b04a;color-scheme:dark}}
++*{box-sizing:border-box}
++body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column}
++button,input,select,textarea{font:inherit;color:inherit}
++button,select,input,textarea{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:5px 9px}
++button{cursor:pointer}button:hover{border-color:var(--accent)}
++button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
++button.danger{color:var(--danger)}
++button:disabled{opacity:.4;cursor:default}
++:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
++header{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid var(--line);align-items:center}
++.grow{flex:1}
++#q{min-width:140px}
++main{flex:1;display:flex;gap:12px;padding:12px;overflow-x:auto;align-items:flex-start}
++.col{background:var(--col);border-radius:10px;width:290px;flex:none;max-height:calc(100vh - 130px);display:flex;flex-direction:column;padding:8px}
++.col.over{outline:2px dashed var(--accent)}
++.col-h{display:flex;align-items:center;gap:4px;padding:2px 2px 8px}
++.col-h h2{font-size:15px;margin:0;flex:1;overflow-wrap:anywhere}
++.count{color:var(--mute);font-size:13px}.count.full{color:var(--danger);font-weight:600}
++.ic{padding:1px 6px;border:0;background:none;color:var(--mute)}
++.cards{overflow-y:auto;display:flex;flex-direction:column;gap:8px;min-height:30px;padding:2px}
++.card{background:var(--card);border:1px solid var(--line);border-left-width:4px;border-radius:8px;padding:8px 10px;cursor:pointer;overflow-wrap:anywhere}
++.card:hover{border-color:var(--accent)}
++.card.dragging{opacity:.4}
++.card.p-high{border-left-color:var(--danger)}.card.p-med{border-left-color:#f79009}.card.p-low{border-left-color:#3b82f6}
++.chips{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px}
++.chip{font-size:11px;color:#fff;border-radius:10px;padding:0 7px}
++.meta{display:flex;flex-wrap:wrap;gap:8px;font-size:12px;color:var(--mute);margin-top:4px}
++.meta .late{color:var(--danger);font-weight:600}.meta .soon{color:var(--warn)}
++.empty{color:var(--mute);font-size:13px;text-align:center;margin:6px 0}
++.drop-line{height:3px;background:var(--accent);border-radius:2px;flex:none}
++.add{margin-top:8px;display:flex;gap:4px;flex-wrap:wrap}
++.add input{flex:1;min-width:0}
++.add-btn{margin-top:8px;border:0;background:none;color:var(--mute);text-align:left}
++.add-col{flex:none;width:290px;border:2px dashed var(--line);background:none;padding:12px}
++.hint{color:var(--mute);font-size:12px;margin:0;padding:6px 12px}
++#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#222;color:#fff;padding:8px 14px;border-radius:8px;display:flex;gap:12px;align-items:center;z-index:99;max-width:90vw}
++#toast[hidden]{display:none}
++#toast button{background:none;border:0;color:#8ab4ff;font-weight:600}
++dialog{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:16px;width:min(560px,94vw);max-height:92vh}
++dialog::backdrop{background:rgba(0,0,0,.45)}
++dialog label,.fld{display:flex;flex-direction:column;gap:3px;margin-bottom:10px;font-size:13px;color:var(--mute)}
++dialog label input,dialog label textarea,dialog label select,.fld input{color:var(--text);font-size:15px}
++.row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1;min-width:120px}
++.foot{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;margin-top:8px}
++.foot .grow{flex:1}
++.lbls{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
++.lbls label{flex-direction:row;align-items:center;gap:4px;margin:0;color:var(--text);border:1px solid var(--line);border-radius:12px;padding:1px 8px}
++.ck{display:flex;gap:6px;align-items:center;margin-bottom:4px}.ck input[type=text]{flex:1;min-width:0}
++.ar{display:flex;gap:6px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)}.ar span{flex:1;overflow-wrap:anywhere}
++input[type=color]{padding:0;width:34px;height:30px}
++@media (max-width:640px){
++ main{scroll-snap-type:x mandatory;padding:8px;gap:8px}
++ .col,.add-col{width:86vw;scroll-snap-align:center;max-height:none}
++ header button,header select{padding:8px 10px}
++}
++@media (prefers-reduced-motion:no-preference){.card,button{transition:border-color .15s}}

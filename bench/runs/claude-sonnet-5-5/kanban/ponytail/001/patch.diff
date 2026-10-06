@@ -1,0 +1,426 @@
+diff --git a/board/app.js b/board/app.js
+new file mode 100644
+index 0000000..ff19c6a
+--- /dev/null
++++ b/board/app.js
+@@ -0,0 +1,297 @@
++'use strict';
++const KEY = 'kanban.v1', THEME = 'kanban.theme';
++const $ = id => document.getElementById(id);
++const uid = () => Math.random().toString(36).slice(2, 8) + Date.now().toString(36);
++const h = (t, p = {}, ...c) => {
++  const e = document.createElement(t);
++  for (const [k, v] of Object.entries(p)) {
++    if (k === 'class') e.className = v;
++    else if (k.startsWith('on') || k in e) e[k] = v;
++    else e.setAttribute(k, v);
++  }
++  e.append(...c.flat().filter(x => x != null && x !== false));
++  return e;
++};
++
++// ---------- state ----------
++function normalize(s) {
++  if (!s || !Array.isArray(s.columns)) throw new Error('Not a board file');
++  const id = v => String(v || '').replace(/\W/g, '') || uid();
++  return {
++    columns: s.columns.map(c => ({
++      id: id(c.id),
++      title: String(c.title || 'Untitled').slice(0, 80),
++      wip: +c.wip > 0 ? Math.floor(+c.wip) : 0,
++      cards: (Array.isArray(c.cards) ? c.cards : []).map(k => ({
++        id: id(k.id),
++        title: String(k.title || 'Untitled').slice(0, 300),
++        notes: String(k.notes || ''),
++        priority: [1, 2, 3].includes(+k.priority) ? +k.priority : 0,
++        due: /^\d{4}-\d\d-\d\d$/.test(k.due) ? k.due : '',
++        tags: (Array.isArray(k.tags) ? k.tags : []).map(t => String(t).trim()).filter(Boolean),
++        created: +k.created || Date.now(),
++      })),
++    })),
++  };
++}
++const seed = () => normalize({ columns: [{ title: 'To do' }, { title: 'Doing', wip: 3 }, { title: 'Done' }] });
++function load() {
++  try { return normalize(JSON.parse(localStorage.getItem(KEY))); } catch { return seed(); }
++}
++let S = load(), query = '', drag = null, focusAdd = null, toastTimer;
++const undoStack = [];
++
++function save() {
++  try { localStorage.setItem(KEY, JSON.stringify(S)); }
++  catch { toast('Could not save: browser storage unavailable. Use Export to keep your data.'); }
++}
++function commit(fn) {
++  undoStack.push(JSON.stringify(S));
++  if (undoStack.length > 50) undoStack.shift();
++  fn(); save(); render();
++}
++function undo() {
++  if (!undoStack.length) return;
++  S = JSON.parse(undoStack.pop()); save(); render(); toast('Undone');
++}
++function findCard(id) {
++  for (const c of S.columns) { const k = c.cards.find(k => k.id === id); if (k) return [c, k]; }
++  return [];
++}
++function moveCard(id, colId, beforeId) {
++  commit(() => {
++    const [from, k] = findCard(id), to = S.columns.find(c => c.id === colId);
++    if (!k || !to) return;
++    from.cards.splice(from.cards.indexOf(k), 1);
++    const i = to.cards.findIndex(x => x.id === beforeId);
++    to.cards.splice(i < 0 ? to.cards.length : i, 0, k);
++  });
++}
++function moveCol(id, beforeId) {
++  commit(() => {
++    const i = S.columns.findIndex(c => c.id === id);
++    const [c] = S.columns.splice(i, 1);
++    const j = S.columns.findIndex(x => x.id === beforeId);
++    S.columns.splice(j < 0 ? S.columns.length : j, 0, c);
++  });
++}
++function addCard(col, text) {
++  const tags = [];
++  const title = text.replace(/(^|\s)#([\w-]+)/g, (_, s, t) => (tags.push(t), s)).replace(/\s+/g, ' ').trim() || tags.map(t => '#' + t).join(' ');
++  if (!title) return;
++  commit(() => col.cards.push({ id: uid(), title: title.slice(0, 300), notes: '', priority: 0, due: '', tags, created: Date.now() }));
++  focusAdd = col.id; render();
++}
++
++// ---------- helpers ----------
++const today = () => new Date().toLocaleDateString('en-CA');
++const hue = s => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7);
++function match(k) {
++  const text = (k.title + ' ' + k.notes).toLowerCase(), tags = k.tags.map(t => t.toLowerCase());
++  return query.toLowerCase().split(/\s+/).filter(Boolean).every(t => t[0] === '#' ? tags.includes(t.slice(1)) : text.includes(t) || tags.some(g => g.includes(t)));
++}
++function toast(msg, action) {
++  const t = $('toast');
++  t.replaceChildren(msg, action && h('button', { onclick: () => { action(); t.hidden = true; } }, 'Undo'));
++  t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.hidden = true, 5000);
++}
++function setQuery(q) { query = q; $('search').value = q; render(); }
++
++// ---------- render ----------
++const board = $('board');
++function render() {
++  const sl = board.scrollLeft, st = {};
++  board.querySelectorAll('.col').forEach(c => st[c.dataset.id] = c.querySelector('.list').scrollTop);
++  board.replaceChildren(...S.columns.map((c, i) => colEl(c, i === S.columns.length - 1)), addColEl());
++  board.scrollLeft = sl;
++  board.querySelectorAll('.col').forEach(c => c.querySelector('.list').scrollTop = st[c.dataset.id] || 0);
++  const n = S.columns.reduce((a, c) => a + c.cards.length, 0);
++  $('stats').textContent = `${n} card${n === 1 ? '' : 's'}`;
++  $('undo').disabled = !undoStack.length;
++  if (focusAdd) { board.querySelector(`.col[data-id="${focusAdd}"] textarea`)?.focus(); focusAdd = null; }
++}
++
++function colEl(c, last) {
++  const shown = c.cards.filter(match);
++  const over = c.wip && c.cards.length > c.wip;
++  const title = h('h2', { title: 'Double-click to rename' }, c.title);
++  title.ondblclick = () => rename(c, title);
++  const menu = h('details', { class: 'menu' }, h('summary', {}, '⋯'), h('div', {},
++    h('button', { onclick: () => rename(c, title) }, 'Rename'),
++    h('button', { onclick: () => {
++      const v = prompt('WIP limit (0 = none):', c.wip);
++      if (v !== null) commit(() => c.wip = Math.max(0, parseInt(v) || 0));
++    } }, 'Set WIP limit…'),
++    h('button', { onclick: () => commit(() => c.cards.sort((a, b) => b.priority - a.priority)) }, 'Sort by priority'),
++    h('button', { onclick: () => commit(() => c.cards.sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999'))) }, 'Sort by due date'),
++    h('button', { class: 'danger', onclick: () => {
++      const i = S.columns.indexOf(c);
++      commit(() => S.columns.splice(i, 1));
++      toast(`Deleted “${c.title}”`, undo);
++    } }, 'Delete column')));
++  const head = h('div', { class: 'col-head', draggable: true }, title,
++    h('span', { class: 'count' + (over ? ' over' : ''), title: c.wip ? 'WIP limit ' + c.wip : '' },
++      shown.length !== c.cards.length ? `${shown.length} of ${c.cards.length}` : c.cards.length + (c.wip ? '/' + c.wip : '')), menu);
++  const list = h('div', { class: 'list' }, shown.map(k => cardEl(k, last)));
++  const add = h('textarea', { class: 'add', placeholder: '+ Add card (Enter)', rows: 1, maxLength: 300 });
++  add.onkeydown = e => {
++    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (add.value.trim()) addCard(c, add.value); }
++    else if (e.key === 'Escape') add.blur();
++  };
++  const col = h('section', { class: 'col', 'data-id': c.id }, head, list, add);
++
++  head.ondragstart = e => {
++    drag = { type: 'col', id: c.id };
++    e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', c.id);
++    e.dataTransfer.setDragImage(col, 20, 20);
++    setTimeout(() => col.classList.add('dragging'));
++  };
++  head.ondragend = () => { drag = null; render(); };
++  col.ondragover = e => {
++    if (!drag) return;
++    e.preventDefault(); clearMarks();
++    if (drag.type === 'card') {
++      const b = cardAfter(list, e.clientY);
++      b ? b.classList.add('drop-before') : list.classList.add('drop-end');
++    } else if (drag.id !== c.id) col.classList.add(e.clientX < col.getBoundingClientRect().left + col.offsetWidth / 2 ? 'drop-before' : 'drop-end');
++  };
++  col.ondrop = e => {
++    if (!drag) return;
++    e.preventDefault();
++    const d = drag; drag = null; clearMarks();
++    if (d.type === 'card') moveCard(d.id, c.id, cardAfter(list, e.clientY)?.dataset.id);
++    else if (d.id !== c.id) {
++      const left = e.clientX < col.getBoundingClientRect().left + col.offsetWidth / 2;
++      moveCol(d.id, left ? c.id : col.nextElementSibling?.dataset.id);
++    }
++  };
++  return col;
++}
++
++function addColEl() {
++  const i = h('input', { placeholder: '+ Add column (Enter)', maxLength: 80 });
++  i.onkeydown = e => {
++    if (e.key === 'Enter' && i.value.trim()) commit(() => S.columns.push({ id: uid(), title: i.value.trim(), wip: 0, cards: [] }));
++  };
++  return h('div', { class: 'addcol' }, i);
++}
++
++function clearMarks() {
++  document.querySelectorAll('.drop-before,.drop-end').forEach(e => e.classList.remove('drop-before', 'drop-end'));
++}
++function cardAfter(list, y) {
++  return [...list.querySelectorAll('.card:not(.dragging)')].find(el => {
++    const r = el.getBoundingClientRect(); return y < r.top + r.height / 2;
++  });
++}
++
++function rename(c, el) {
++  const i = h('input', { value: c.title, maxLength: 80 });
++  el.replaceWith(i); i.focus(); i.select();
++  let done = false;
++  const end = ok => {
++    if (done) return; done = true;
++    const v = i.value.trim();
++    if (ok && v && v !== c.title) commit(() => c.title = v); else render();
++  };
++  i.onblur = () => end(true);
++  i.onkeydown = e => { if (e.key === 'Enter') end(true); if (e.key === 'Escape') end(false); };
++}
++
++function cardEl(k, last) {
++  const t = today();
++  const meta = h('div', { class: 'meta' },
++    k.due && h('span', { class: 'due' + (!last && k.due < t ? ' overdue' : !last && k.due === t ? ' soon' : '') },
++      '📅 ' + (k.due === t ? 'Today' : new Date(k.due + 'T00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))),
++    k.tags.map(g => h('span', { class: 'tag', style: `--h:${hue(g.toLowerCase())}`, title: 'Filter by this tag', onclick: e => { e.stopPropagation(); setQuery('#' + g); } }, g)));
++  const el = h('article', { class: 'card p' + k.priority, draggable: true, tabindex: 0, 'data-id': k.id },
++    h('div', {}, k.title), k.notes && h('div', { class: 'notes' }, k.notes), (k.due || k.tags.length) && meta);
++  el.onclick = () => openDialog(k.id);
++  el.onkeydown = e => { if (e.key === 'Enter' && e.target === el) openDialog(k.id); };
++  el.ondragstart = e => {
++    drag = { type: 'card', id: k.id };
++    e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', k.id);
++    setTimeout(() => el.classList.add('dragging'));
++  };
++  el.ondragend = () => { drag = null; render(); };
++  return el;
++}
++
++// ---------- card dialog ----------
++const dlg = $('dlg'), form = $('form');
++let editing = null; // card id, or null for a new card
++function openDialog(id, colId) {
++  const [col, k] = id ? findCard(id) : [S.columns.find(c => c.id === colId) || S.columns[0], {}];
++  if (!col) return;
++  editing = id;
++  form.col.replaceChildren(...S.columns.map(c => h('option', { value: c.id }, c.title)));
++  form.title.value = k.title || ''; form.notes.value = k.notes || '';
++  form.priority.value = k.priority || 0; form.due.value = k.due || '';
++  form.tags.value = (k.tags || []).join(', '); form.col.value = col.id;
++  $('del').hidden = !id;
++  $('meta').textContent = id ? 'Created ' + new Date(k.created).toLocaleString() : '';
++  dlg.showModal(); form.title.focus();
++}
++form.onsubmit = e => {
++  e.preventDefault();
++  const v = {
++    title: form.title.value.trim(), notes: form.notes.value.trim(), priority: +form.priority.value, due: form.due.value,
++    tags: [...new Set(form.tags.value.split(',').map(t => t.trim().replace(/^#/, '')).filter(Boolean))],
++  };
++  if (!v.title) return;
++  commit(() => {
++    const to = S.columns.find(c => c.id === form.col.value);
++    if (editing) {
++      const [from, k] = findCard(editing);
++      Object.assign(k, v);
++      if (from !== to) { from.cards.splice(from.cards.indexOf(k), 1); to.cards.push(k); }
++    } else to.cards.push({ id: uid(), created: Date.now(), ...v });
++  });
++  dlg.close();
++};
++form.onkeydown = e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) form.requestSubmit(); };
++$('cancel').onclick = () => dlg.close();
++dlg.onclick = e => { if (e.target === dlg) dlg.close(); };
++$('del').onclick = () => {
++  const [c, k] = findCard(editing);
++  commit(() => c.cards.splice(c.cards.indexOf(k), 1));
++  dlg.close(); toast(`Deleted “${k.title}”`, undo);
++};
++
++// ---------- toolbar ----------
++$('search').oninput = e => { query = e.target.value; render(); };
++$('newCard').onclick = () => openDialog(null);
++$('undo').onclick = undo;
++$('export').onclick = () => {
++  const a = h('a', { href: URL.createObjectURL(new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' })), download: `kanban-${today()}.json` });
++  a.click(); URL.revokeObjectURL(a.href);
++};
++$('import').onclick = () => $('file').click();
++$('file').onchange = async e => {
++  const f = e.target.files[0]; e.target.value = '';
++  if (!f) return;
++  try {
++    const next = normalize(JSON.parse(await f.text()));
++    if (!confirm('Replace the current board with this file? (You can undo.)')) return;
++    commit(() => S = next);
++    toast('Imported', undo);
++  } catch (err) { alert('Import failed: ' + err.message); }
++};
++function setTheme(t) { document.documentElement.dataset.theme = t; try { localStorage.setItem(THEME, t); } catch {} }
++document.documentElement.dataset.theme = localStorage.getItem(THEME) || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light');
++$('theme').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
++
++document.addEventListener('click', e =>
++  document.querySelectorAll('details.menu[open]').forEach(d => { if (!d.contains(e.target) || e.target.closest('button')) d.open = false; }));
++document.addEventListener('keydown', e => {
++  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
++  if (e.key === 'Escape' && e.target.id === 'search') setQuery('');
++  if (typing || dlg.open || e.altKey) return;
++  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
++  else if (e.ctrlKey || e.metaKey) return;
++  else if (e.key === 'n') { e.preventDefault(); openDialog(null); }
++  else if (e.key === '/') { e.preventDefault(); $('search').focus(); }
++});
++addEventListener('storage', e => { if (e.key === KEY) { S = load(); render(); } });
++
++render();
+diff --git a/board/index.html b/board/index.html
+new file mode 100644
+index 0000000..d9f9e07
+--- /dev/null
++++ b/board/index.html
+@@ -0,0 +1,47 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<title>Board</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<header>
++  <h1>Board <small id="stats"></small></h1>
++  <input id="search" type="search" placeholder="Search…  (/)  use #tag to filter by tag" autocomplete="off">
++  <button id="newCard" title="New card (n)">+ Card</button>
++  <button id="undo" title="Undo (Ctrl/⌘+Z)">↶ Undo</button>
++  <button id="export" title="Download a JSON backup">Export</button>
++  <button id="import" title="Replace the board from a JSON backup">Import</button>
++  <button id="theme" title="Toggle light/dark">◐</button>
++  <input id="file" type="file" accept="application/json,.json" hidden>
++</header>
++<main id="board"></main>
++<footer>n new card · / search · Ctrl/⌘+Z undo · double-click a column title to rename · drag cards and column headers · type <code>#tag</code> in quick-add to tag a card · data is saved in this browser only, use Export for backups</footer>
++
++<dialog id="dlg">
++  <form id="form">
++    <label>Title <input name="title" required maxlength="300"></label>
++    <label>Notes <textarea name="notes" rows="6"></textarea></label>
++    <div class="row">
++      <label>Priority
++        <select name="priority"><option value="0">None</option><option value="1">Low</option><option value="2">Medium</option><option value="3">High</option></select>
++      </label>
++      <label>Due <input type="date" name="due"></label>
++      <label>Column <select name="col"></select></label>
++    </div>
++    <label>Tags <input name="tags" placeholder="comma separated"></label>
++    <p id="meta"></p>
++    <div class="actions">
++      <button type="button" id="del" class="danger">Delete</button>
++      <span></span>
++      <button type="button" id="cancel">Cancel</button>
++      <button type="submit" class="primary">Save</button>
++    </div>
++  </form>
++</dialog>
++<div id="toast" hidden></div>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/board/style.css b/board/style.css
+new file mode 100644
+index 0000000..7bcd76b
+--- /dev/null
++++ b/board/style.css
+@@ -0,0 +1,64 @@
++:root{--bg:#f1f2f5;--col:#e4e6eb;--card:#fff;--text:#1d2129;--mute:#6b7280;--line:#d0d4db;--accent:#3b6df0;--danger:#d93a3a;--warn:#c27c0e;color-scheme:light}
++:root[data-theme=dark]{--bg:#14161a;--col:#1e2127;--card:#2a2e36;--text:#e6e8ec;--mute:#9aa1ad;--line:#3a3f49;--accent:#6c93ff;--danger:#ff6b6b;--warn:#e8a93a;color-scheme:dark}
++*{box-sizing:border-box}
++html,body{height:100%;margin:0}
++body{display:flex;flex-direction:column;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,Segoe UI,sans-serif}
++header{display:flex;gap:8px;align-items:center;padding:10px 16px;flex-wrap:wrap}
++h1{font-size:18px;margin:0 8px 0 0}
++h1 small{color:var(--mute);font-weight:400;font-size:12px;margin-left:6px}
++#search{flex:1;min-width:160px;max-width:360px}
++input,textarea,select,button{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 9px}
++button{cursor:pointer}
++button:hover:not(:disabled){border-color:var(--accent)}
++button:disabled{opacity:.4;cursor:default}
++button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
++button.danger{color:var(--danger)}
++:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
++main{flex:1;display:flex;gap:12px;padding:4px 16px 12px;overflow-x:auto;align-items:flex-start;min-height:0}
++.col,.addcol{flex:none;width:290px;max-height:100%;display:flex;flex-direction:column;background:var(--col);border-radius:10px;padding:8px}
++.col.dragging{opacity:.4}
++.col.drop-before{box-shadow:-6px 0 0 -2px var(--accent)}
++.col.drop-end{box-shadow:6px 0 0 -2px var(--accent)}
++.col-head{display:flex;align-items:center;gap:6px;padding:2px 4px 8px;cursor:grab}
++.col-head h2{flex:1;margin:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.col-head input{flex:1;min-width:0;font-weight:600}
++.count{color:var(--mute);font-size:12px}
++.count.over{color:var(--danger);font-weight:700}
++.menu{position:relative}
++.menu summary{list-style:none;cursor:pointer;padding:0 6px;border-radius:4px;color:var(--mute)}
++.menu summary::-webkit-details-marker{display:none}
++.menu summary:hover{background:var(--line)}
++.menu div{position:absolute;right:0;top:100%;z-index:5;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:4px;display:flex;flex-direction:column;min-width:160px;box-shadow:0 6px 18px #0003}
++.menu button{border:0;text-align:left;background:none}
++.menu button:hover{background:var(--col)}
++.list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;min-height:24px;padding:2px}
++.list.drop-end{box-shadow:0 8px 0 -5px var(--accent)}
++.card{background:var(--card);border-radius:8px;padding:8px 10px;cursor:pointer;border-left:4px solid transparent;box-shadow:0 1px 2px #0002;word-break:break-word}
++.card.p1{border-left-color:#4caf7d}.card.p2{border-left-color:#e8a93a}.card.p3{border-left-color:var(--danger)}
++.card.dragging{opacity:.4}
++.card.drop-before{box-shadow:0 -4px 0 -1px var(--accent)}
++.card .notes{color:var(--mute);font-size:12px;margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-line}
++.meta{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;font-size:11px}
++.tag,.due{padding:1px 7px;border-radius:99px}
++.tag{background:hsl(var(--h) 70% 50%/.2);cursor:pointer}
++.due{background:var(--col);color:var(--mute)}
++.due.soon{color:var(--warn);font-weight:600}
++.due.overdue{color:var(--danger);font-weight:600}
++.add{margin-top:8px;width:100%;resize:none;height:34px;background:transparent;border-style:dashed}
++.add:focus{background:var(--card);height:64px}
++.addcol input{width:100%}
++.addcol{background:transparent;border:2px dashed var(--line)}
++footer{padding:6px 16px 10px;color:var(--mute);font-size:11px}
++code{background:var(--col);padding:0 4px;border-radius:3px}
++dialog{border:0;border-radius:12px;padding:0;width:min(520px,94vw);background:var(--bg);color:var(--text);box-shadow:0 20px 60px #0006}
++dialog::backdrop{background:#0006}
++form{padding:18px;display:flex;flex-direction:column;gap:12px}
++label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mute);flex:1}
++label input,label textarea,label select{font-size:14px;color:var(--text)}
++.row{display:flex;gap:10px}
++.actions{display:flex;gap:8px}.actions span{flex:1}
++#meta{margin:0;font-size:11px;color:var(--mute)}
++#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:8px 14px;border-radius:8px;display:flex;gap:12px;align-items:center;z-index:10}
++#toast[hidden]{display:none}
++#toast button{background:none;color:inherit;border-color:currentColor;padding:2px 8px}
++@media(max-width:600px){.col,.addcol{width:84vw}.row{flex-direction:column}}

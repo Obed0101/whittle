@@ -1,0 +1,84 @@
+diff --git a/site/pricing.html b/site/pricing.html
+new file mode 100644
+index 0000000..321380d
+--- /dev/null
++++ b/site/pricing.html
+@@ -0,0 +1,78 @@
++<!doctype html>
++<html lang="en">
++<head>
++  <meta charset="utf-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <meta name="theme-color" content="#f7f8f5">
++  <title>Pricing — Relay</title>
++  <meta name="description" content="Simple, thoughtful pricing for teams that work better together. Compare Relay plans.">
++  <style>
++    :root{color-scheme:light dark;--bg:#f7f8f5;--surface:#fff;--ink:#18231f;--muted:#65716b;--line:#e2e8e2;--green:#176b4b;--green-dark:#10553a;--soft:#eaf4ed;--shadow:0 18px 55px #183f2d12;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-synthesis:none;text-rendering:optimizeLegibility}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);line-height:1.55}.wrap{width:min(1120px,calc(100% - 48px));margin:auto}a{color:inherit}.skip{position:absolute;left:16px;top:-60px;background:var(--ink);color:var(--surface);padding:10px 14px;border-radius:8px;z-index:10}.skip:focus{top:12px}:focus-visible{outline:3px solid #78b88d;outline-offset:4px;border-radius:4px}.topbar{height:76px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}.brand{display:flex;align-items:center;gap:10px;text-decoration:none;font-weight:750;font-size:20px;letter-spacing:-.6px}.mark{width:30px;height:30px;border-radius:10px;background:var(--green);display:grid;place-items:center;color:white}.mark svg{width:18px}.nav{display:flex;gap:30px;align-items:center;font-size:14px}.nav a{text-decoration:none;color:var(--muted)}.nav a:hover{color:var(--ink)}.nav .nav-cta{color:var(--green);font-weight:650}.hero{text-align:center;padding:76px 0 34px}.eyebrow{text-transform:uppercase;letter-spacing:1.8px;font-weight:750;font-size:11px;color:var(--green);margin:0 0 16px}.hero h1{font-size:clamp(40px,6vw,64px);line-height:1.06;letter-spacing:-3px;margin:0 auto 17px;max-width:760px}.hero>p:not(.eyebrow){font-size:18px;color:var(--muted);margin:0}.billing{display:flex;align-items:center;justify-content:center;gap:13px;margin:29px 0 14px;font-size:14px;font-weight:600}.billing span{color:var(--muted)}.billing span.active{color:var(--ink)}.switch{width:48px;height:27px;border:0;border-radius:30px;background:var(--green);padding:3px;cursor:pointer;display:flex;align-items:center;transition:background .2s}.switch[aria-checked="true"]{justify-content:flex-end}.switch[aria-checked="false"]{background:#839087}.knob{display:block;width:21px;height:21px;border-radius:50%;background:white;box-shadow:0 1px 3px #0003}.save{color:var(--green);font-size:12px;font-weight:700;background:var(--soft);padding:5px 9px;border-radius:20px}.billing-note{height:20px;color:var(--muted);font-size:12px;margin:0}.plans{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;align-items:stretch;padding:21px 0 82px}.card{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:29px 27px 25px;box-shadow:var(--shadow);display:flex;flex-direction:column;transition:transform .22s,box-shadow .22s}.card:hover{transform:translateY(-4px);box-shadow:0 24px 60px #183f2d1b}.card.featured{border:2px solid var(--green);padding:28px 26px 24px;box-shadow:0 18px 55px #176b4b1c}.ribbon{position:absolute;left:50%;top:0;transform:translate(-50%,-50%);background:var(--green);color:white;border-radius:30px;padding:6px 13px;font-size:11px;letter-spacing:.3px;font-weight:750;white-space:nowrap}.plan-name{font-size:17px;font-weight:750;margin:0 0 5px}.description{font-size:13px;color:var(--muted);margin:0;min-height:42px}.price{margin:23px 0 0;display:flex;align-items:baseline;gap:4px}.price strong{font-size:43px;letter-spacing:-2px;line-height:1}.price span{font-size:13px;color:var(--muted)}.bill-detail{height:21px;color:var(--muted);font-size:12px;margin:7px 0 19px}.button{display:block;text-align:center;text-decoration:none;border-radius:9px;padding:11px 16px;border:1px solid #ccd7ce;font-size:14px;font-weight:700;transition:background .18s,color .18s,transform .18s}.button:hover{transform:translateY(-1px);background:var(--soft)}.button.primary{background:var(--green);border-color:var(--green);color:#fff}.button.primary:hover{background:var(--green-dark)}.includes{border-top:1px solid var(--line);margin-top:24px;padding-top:19px;font-size:12px;text-transform:uppercase;letter-spacing:.8px;font-weight:750}.features{list-style:none;padding:12px 0 0;margin:0;display:grid;gap:11px;font-size:13px;color:var(--muted)}.features li{display:flex;gap:9px;align-items:flex-start}.check{color:var(--green);font-size:16px;line-height:1.3;font-weight:800}.compare{padding:68px 0 82px;border-top:1px solid var(--line)}.section-head{text-align:center;margin-bottom:33px}.section-head h2,.faq h2{font-size:34px;letter-spacing:-1.3px;line-height:1.15;margin:0 0 9px}.section-head p{color:var(--muted);margin:0}.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:var(--shadow)}table{width:100%;border-collapse:collapse;min-width:650px;text-align:center}th,td{padding:16px 20px;border-bottom:1px solid var(--line);font-size:14px}thead th{font-size:13px;color:var(--muted);font-weight:700;background:var(--soft)}thead th:first-child{text-align:left;width:38%;background:var(--surface)}tbody th{text-align:left;font-weight:600}tbody td{color:var(--green);font-weight:750}tbody tr:last-child th,tbody tr:last-child td{border-bottom:0}.no{color:#a1aaa4}caption{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.faq{padding:34px 0 93px;display:grid;grid-template-columns:.8fr 1.2fr;gap:60px}.faq-intro p{color:var(--muted);margin-top:12px}.faq-intro a{color:var(--green);font-weight:650}.questions details{border-bottom:1px solid var(--line)}.questions details:first-child{border-top:1px solid var(--line)}.questions summary{cursor:pointer;list-style:none;padding:20px 32px 20px 0;font-weight:650;position:relative}.questions summary::-webkit-details-marker{display:none}.questions summary:after{content:"+";position:absolute;right:4px;top:18px;color:var(--green);font-size:21px;font-weight:400}.questions details[open] summary:after{content:"−"}.answer{color:var(--muted);font-size:14px;margin:0;padding:0 20px 19px 0}.footer{border-top:1px solid var(--line);padding:25px 0;color:var(--muted);font-size:13px;display:flex;justify-content:space-between;align-items:center}.footer a{color:var(--green);text-decoration:none}
++    @media(max-width:760px){.wrap{width:min(100% - 36px,560px)}.topbar{height:66px}.nav{gap:16px}.nav a:first-child{display:none}.hero{padding:59px 0 25px}.hero h1{letter-spacing:-2px}.hero>p:not(.eyebrow){font-size:16px}.plans{grid-template-columns:1fr;gap:25px;padding:23px 0 62px}.card{padding:25px 24px}.card.featured{padding:24px 23px}.description{min-height:0}.price{margin-top:18px}.compare{padding:54px 0 55px}.faq{grid-template-columns:1fr;gap:20px;padding:20px 0 66px}.section-head h2,.faq h2{font-size:30px}.footer{gap:12px;flex-wrap:wrap}}@media(max-width:390px){.nav{gap:11px;font-size:13px}.save{font-size:11px;padding:4px 7px}.billing{gap:9px}.wrap{width:calc(100% - 30px)}}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#111713;--surface:#19211c;--ink:#edf3ed;--muted:#a1afa5;--line:#303c33;--green:#73c693;--green-dark:#60ae80;--soft:#21372a;--shadow:0 18px 55px #0003}.button{border-color:#455348}.button.primary{color:#102016}.ribbon{color:#102016}.switch[aria-checked="false"]{background:#69766c}.no{color:#69766c}.table-wrap{background:var(--surface)}thead th:first-child{background:var(--surface)}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
++  </style>
++</head>
++<body>
++  <a class="skip" href="#main">Skip to content</a>
++  <div class="wrap">
++    <header class="topbar">
++      <a class="brand" href="index.html" aria-label="Relay home"><span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>relay</a>
++      <nav class="nav" aria-label="Main navigation"><a href="index.html">Product</a><a href="#compare">Compare</a><a href="#faq">FAQ</a><a class="nav-cta" href="#plans">Get started&nbsp; ↗</a></nav>
++    </header>
++    <main id="main">
++      <section class="hero" aria-labelledby="page-title">
++        <p class="eyebrow">Clear plans. Better teamwork.</p>
++        <h1 id="page-title">Room to do your best work.</h1>
++        <p>Simple pricing that grows with your team. No surprises, ever.</p>
++        <div class="billing" aria-label="Billing frequency">
++          <span id="monthly-label" class="active">Monthly</span>
++          <button class="switch" id="billing-switch" type="button" role="switch" aria-checked="false" aria-labelledby="monthly-label yearly-label" aria-describedby="billing-note"><span class="knob" aria-hidden="true"></span></button>
++          <span id="yearly-label">Yearly</span><span class="save">Save 20%</span>
++        </div>
++        <p class="billing-note" id="billing-note" aria-live="polite">Billed monthly</p>
++      </section>
++      <section class="plans" id="plans" aria-label="Pricing plans">
++        <article class="card">
++          <h2 class="plan-name">Free</h2><p class="description">A calmer way to chat, for small beginnings.</p>
++          <p class="price"><strong>$0</strong><span>/ user / month</span></p><p class="bill-detail">Free forever</p>
++          <a class="button" href="mailto:hello@relay.example?subject=Get%20started%20with%20Relay%20Free">Get started free</a>
++          <p class="includes">The essentials</p><ul class="features"><li><span class="check">✓</span>Unlimited messages</li><li><span class="check">✓</span>Up to 10 members</li><li><span class="check">✓</span>1:1 audio and video calls</li><li><span class="check">✓</span>10 GB shared storage</li></ul>
++        </article>
++        <article class="card featured" aria-label="Team plan, recommended">
++          <span class="ribbon">✦ &nbsp;MOST POPULAR</span><h2 class="plan-name">Team</h2><p class="description">Everything your team needs to find its flow.</p>
++          <p class="price"><strong data-price="team">$8</strong><span>/ user / month</span></p><p class="bill-detail" data-billing-detail="team">Billed monthly</p>
++          <a class="button primary" href="mailto:hello@relay.example?subject=Get%20started%20with%20Relay%20Team">Start your free trial</a>
++          <p class="includes">Everything in Free, plus</p><ul class="features"><li><span class="check">✓</span>Unlimited message history</li><li><span class="check">✓</span>Unlimited members</li><li><span class="check">✓</span>Group audio and video calls</li><li><span class="check">✓</span>1 TB shared storage</li><li><span class="check">✓</span>Integrations and workflows</li></ul>
++        </article>
++        <article class="card">
++          <h2 class="plan-name">Business</h2><p class="description">Advanced security and support for growing orgs.</p>
++          <p class="price"><strong data-price="business">$15</strong><span>/ user / month</span></p><p class="bill-detail" data-billing-detail="business">Billed monthly</p>
++          <a class="button" href="mailto:hello@relay.example?subject=Talk%20to%20Relay%20about%20Business">Talk to our team</a>
++          <p class="includes">Everything in Team, plus</p><ul class="features"><li><span class="check">✓</span>Advanced admin controls</li><li><span class="check">✓</span>Single sign-on (SSO)</li><li><span class="check">✓</span>Unlimited storage</li><li><span class="check">✓</span>Priority support</li><li><span class="check">✓</span>Data retention policies</li></ul>
++        </article>
++      </section>
++      <section class="compare" id="compare" aria-labelledby="compare-title">
++        <div class="section-head"><h2 id="compare-title">The details, side by side.</h2><p>Everything you need to choose the right fit.</p></div>
++        <div class="table-wrap" tabindex="0" role="region" aria-label="Plan feature comparison table; scroll horizontally on small screens">
++          <table><caption>Feature comparison for Relay Free, Team, and Business plans</caption><thead><tr><th scope="col">Features</th><th scope="col">Free</th><th scope="col">Team</th><th scope="col">Business</th></tr></thead><tbody>
++            <tr><th scope="row">Message history</th><td>90 days</td><td>Unlimited</td><td>Unlimited</td></tr><tr><th scope="row">Members</th><td>Up to 10</td><td>Unlimited</td><td>Unlimited</td></tr><tr><th scope="row">Audio &amp; video calls</th><td>1:1</td><td>Group calls</td><td>Group calls</td></tr><tr><th scope="row">Shared storage</th><td>10 GB</td><td>1 TB</td><td>Unlimited</td></tr><tr><th scope="row">Integrations &amp; workflows</th><td><span class="no" aria-label="Not included">—</span></td><td>Included</td><td>Included</td></tr><tr><th scope="row">Advanced admin &amp; SSO</th><td><span class="no" aria-label="Not included">—</span></td><td><span class="no" aria-label="Not included">—</span></td><td>Included</td></tr><tr><th scope="row">Priority support</th><td><span class="no" aria-label="Not included">—</span></td><td><span class="no" aria-label="Not included">—</span></td><td>Included</td></tr>
++          </tbody></table>
++        </div>
++      </section>
++      <section class="faq" id="faq" aria-labelledby="faq-title">
++        <div class="faq-intro"><p class="eyebrow">Good to know</p><h2 id="faq-title">Questions, answered.</h2><p>Still wondering about something? <a href="mailto:hello@relay.example">We’re happy to help.</a></p></div>
++        <div class="questions">
++          <details><summary>Can I try a paid plan before I commit?</summary><p class="answer">Absolutely. Start a 14-day free trial of Team to explore all its features. No credit card is required, and you can switch plans at any time.</p></details>
++          <details><summary>How does yearly billing work?</summary><p class="answer">Choose yearly billing and save 20% compared with paying month to month. The displayed monthly equivalent is billed annually for each active seat.</p></details>
++          <details><summary>Can I change or cancel my plan?</summary><p class="answer">Yes. Upgrade, downgrade, or cancel whenever you like. Changes are managed by your workspace owner and take effect according to your billing period.</p></details>
++          <details><summary>What counts as a user?</summary><p class="answer">A user is anyone invited to your workspace. You can add or remove seats as your team changes, and your plan adjusts to your active members.</p></details>
++          <details><summary>Is my team’s data secure?</summary><p class="answer">Your conversations are encrypted in transit and at rest. Business adds single sign-on, advanced controls, and configurable data retention for extra peace of mind.</p></details>
++        </div>
++      </section>
++    </main>
++    <footer class="footer"><a class="brand" href="index.html"><span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>relay</a><span>Thoughtful chat for teams that care. © 2025 Relay</span><a href="mailto:hello@relay.example">Contact us</a></footer>
++  </div>
++  <script>
++    (()=>{const toggle=document.getElementById('billing-switch');const note=document.getElementById('billing-note');const prices={team:document.querySelector('[data-price="team"]'),business:document.querySelector('[data-price="business"]')};const details={team:document.querySelector('[data-billing-detail="team"]'),business:document.querySelector('[data-billing-detail="business"]')};function update(){const yearly=toggle.getAttribute('aria-checked')!=='true';toggle.setAttribute('aria-checked',String(yearly));prices.team.textContent=yearly?'$6.40':'$8';prices.business.textContent=yearly?'$12':'$15';details.team.textContent=yearly?'$76.80 billed annually':'Billed monthly';details.business.textContent=yearly?'$144 billed annually':'Billed monthly';note.textContent=yearly?'Billed annually · 20% savings':'Billed monthly'}toggle.addEventListener('click',update);toggle.addEventListener('keydown',event=>{if(event.key===' '||event.key==='Enter'){event.preventDefault();update()}})})();
++  </script>
++</body>
++</html>

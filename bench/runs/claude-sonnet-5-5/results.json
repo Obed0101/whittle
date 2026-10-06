@@ -1,0 +1,63 @@
+{
+  "agent": {
+    "harness": "claude",
+    "model": "claude-sonnet-5-5"
+  },
+  "runs": 30,
+  "cells": {
+    "kanban/none": {
+      "runs": 5,
+      "delivered": 37.2,
+      "min": 36,
+      "max": 39,
+      "output_tokens": 28559,
+      "cost": 0.4543,
+      "seconds": 206.0
+    },
+    "kanban/ponytail": {
+      "runs": 5,
+      "delivered": 30.4,
+      "min": 29,
+      "max": 33,
+      "output_tokens": 10720.0,
+      "cost": 0.1847,
+      "seconds": 70.0
+    },
+    "kanban/whittle": {
+      "runs": 5,
+      "delivered": 37.6,
+      "min": 37,
+      "max": 38,
+      "output_tokens": 19150.0,
+      "cost": 0.2991,
+      "seconds": 126.0
+    },
+    "notes/none": {
+      "runs": 5,
+      "delivered": 34.2,
+      "min": 34,
+      "max": 35,
+      "output_tokens": 28813,
+      "cost": 0.469,
+      "seconds": 210.0
+    },
+    "notes/ponytail": {
+      "runs": 5,
+      "delivered": 32.2,
+      "min": 32,
+      "max": 33,
+      "output_tokens": 13167.0,
+      "cost": 0.2222,
+      "seconds": 83.0
+    },
+    "notes/whittle": {
+      "runs": 5,
+      "delivered": 34.8,
+      "min": 34,
+      "max": 35,
+      "output_tokens": 15358.0,
+      "cost": 0.2438,
+      "seconds": 92.0
+    }
+  }
+}

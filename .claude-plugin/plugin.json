@@ -1,0 +1,10 @@
+{
+  "name": "whittle",
+  "version": "1.0.0",
+  "description": "Cut the code, not the product. Ship everything that was asked for; spend nothing on the rest.",
+  "author": {
+    "name": "Obed0101"
+  },
+  "repository": "https://github.com/Obed0101/whittle",
+  "license": "MIT"
+}

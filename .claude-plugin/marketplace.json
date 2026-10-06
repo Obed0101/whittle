@@ -1,0 +1,13 @@
+{
+  "name": "whittle",
+  "owner": {
+    "name": "Obed0101"
+  },
+  "plugins": [
+    {
+      "name": "whittle",
+      "source": "./",
+      "description": "Cut the code, not the product. Ship everything that was asked for; spend nothing on the rest."
+    }
+  ]
+}

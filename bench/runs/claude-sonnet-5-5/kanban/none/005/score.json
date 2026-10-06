@@ -1,0 +1,27 @@
+{
+  "task": "kanban",
+  "arm": "none",
+  "run": "005",
+  "checks": 40,
+  "passed": 37,
+  "missed": [
+    "test_k23_motion_with_reduced_motion_respected",
+    "test_k38_sort_cards",
+    "test_k40_reset_or_clear_board"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 1040,
+  "agent": {
+    "harness": "claude",
+    "model": "claude-sonnet-5-5",
+    "exit": 0,
+    "seconds": 220.8,
+    "tokens": {
+      "input": 39096,
+      "output": 34709,
+      "cacheRead": 178230,
+      "cost": 0.5391
+    },
+    "turns": 7
+  }
+}

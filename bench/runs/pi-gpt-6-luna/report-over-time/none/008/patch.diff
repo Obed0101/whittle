@@ -1,0 +1,171 @@
+diff --git a/app/report.py b/app/report.py
+new file mode 100644
+index 0000000..35d46e3
+--- /dev/null
++++ b/app/report.py
+@@ -0,0 +1,165 @@
++"""Render expense CSV files as reports."""
++
++import argparse
++import csv
++from datetime import date
++from decimal import Decimal, InvalidOperation
++import json
++import sys
++
++from app.expenses import load
++
++
++class Parser(argparse.ArgumentParser):
++    def error(self, message):
++        self.print_usage(sys.stderr)
++        if "invalid date:" in message:
++            message = message[message.index("invalid date:"):]
++        self.exit(2, f"error: {message}\n")
++
++
++def _date_option(value):
++    try:
++        return date.fromisoformat(value)
++    except ValueError:
++        raise argparse.ArgumentTypeError(f"invalid date: {value}")
++
++
++def _amount(value):
++    try:
++        result = Decimal(value)
++        if not result.is_finite():
++            raise InvalidOperation
++        return result
++    except (InvalidOperation, TypeError):
++        return None
++
++
++def _money(value, currency=""):
++    if value < 0:
++        return f"({currency}{abs(value):,.2f})"
++    return f"{currency}{value:,.2f}"
++
++
++def _table(headers, rows, total, currency="", no_header=False):
++    # Amounts are rendered before sizing so the numeric column is consistently aligned.
++    rendered = [list(row) for row in rows]
++    widths = [len(str(h)) for h in headers]
++    for row in rendered:
++        for i, value in enumerate(row):
++            widths[i] = max(widths[i], len(str(value)))
++    lines = []
++    if not no_header:
++        lines.append("  ".join(str(h).ljust(widths[i]) for i, h in enumerate(headers)).rstrip())
++        lines.append("  ".join("-" * widths[i] for i in range(len(headers))))
++    for row in rendered:
++        cells = []
++        for i, value in enumerate(row):
++            text = str(value)
++            cells.append(text.rjust(widths[i]) if (headers == ["Date", "Category", "Amount", "Note"] and i == 2) else text.ljust(widths[i]))
++        lines.append("  ".join(cells).rstrip())
++    lines.append(f"Total{' ' * max(1, sum(widths) + 2 * (len(widths)-1) - 5)}{_money(total, currency)}")
++    return "\n".join(lines) + "\n"
++
++
++def main(argv: list[str]) -> int:
++    parser = Parser(prog="python -m app.report", description="Create a report from an expense CSV.",
++                    epilog="Example: python -m app.report expenses.csv --by month")
++    parser.add_argument("path")
++    parser.add_argument("--category", action="append", default=[], metavar="NAME")
++    parser.add_argument("--exclude", action="append", default=[], metavar="NAME",
++                        help="exclude a category (may be repeated)")
++    parser.add_argument("--from", dest="from_date", type=_date_option, metavar="DATE")
++    parser.add_argument("--to", dest="to_date", type=_date_option, metavar="DATE")
++    parser.add_argument("--min", dest="minimum", type=_amount, metavar="AMOUNT")
++    parser.add_argument("--by", choices=("category", "month"))
++    parser.add_argument("--format", choices=("table", "json", "csv", "markdown"), default="table")
++    parser.add_argument("--currency", default="", metavar="SYMBOL")
++    parser.add_argument("--top", type=int, metavar="N")
++    parser.add_argument("--no-header", action="store_true")
++    args = parser.parse_args(argv)
++    if args.minimum is None and any(a == "--min" or a.startswith("--min=") for a in argv):
++        parser.error("argument --min: expected a number")
++    if args.top is not None and args.top < 0:
++        parser.error("--top must be non-negative")
++    if args.from_date and args.to_date and args.from_date > args.to_date:
++        print("error: --from is after --to", file=sys.stderr)
++        return 2
++    try:
++        source = load(args.path)
++    except FileNotFoundError:
++        print(f"error: file not found: {args.path}", file=sys.stderr)
++        return 2
++    rows = []
++    invalid = 0
++    for row in source:
++        amount = _amount(row.get("amount"))
++        if amount is None:
++            invalid += 1
++            continue
++        try:
++            day = date.fromisoformat(row.get("date", ""))
++        except ValueError:
++            day = None
++        rows.append({"date": row.get("date", ""), "_date": day, "category": row.get("category", ""),
++                     "amount": amount, "note": row.get("note", "")})
++    included = {category.casefold() for category in args.category}
++    excluded = {category.casefold() for category in args.exclude}
++    filtered = [row for row in rows if
++                (not included or row["category"].casefold() in included) and
++                row["category"].casefold() not in excluded and
++                (args.from_date is None or (row["_date"] is not None and row["_date"] >= args.from_date)) and
++                (args.to_date is None or (row["_date"] is not None and row["_date"] <= args.to_date)) and
++                (args.minimum is None or row["amount"] >= args.minimum)]
++    filtered.sort(key=lambda row: (row["_date"] is None, row["_date"] or date.min))
++    if args.top is not None:
++        filtered = sorted(filtered, key=lambda r: -r["amount"])[:args.top]
++    total = sum((r["amount"] for r in filtered), Decimal(0))
++    if not filtered:
++        print("No expenses.")
++    elif args.format == "json":
++        if args.by:
++            groups = _groups(filtered, args.by)
++            result = [{"group": key, "count": len(items), "total": float(sum((x["amount"] for x in items), Decimal(0)))} for key, items in groups]
++        else:
++            result = [{"date": r["date"], "category": r["category"], "amount": float(r["amount"]), "note": r["note"]} for r in filtered]
++        print(json.dumps(result, indent=2))
++    elif args.format == "markdown":
++        print("| Date | Category | Amount | Note |")
++        print("| --- | --- | ---: | --- |")
++        for r in filtered:
++            note = r["note"].replace("|", "\\|")
++            category = r["category"].replace("|", "\\|")
++            print(f"| {r['date']} | {category} | {r['amount']:,.2f} | {note} |")
++        print(f"| Total | | {total:,.2f} | |")
++    elif args.format == "csv":
++        writer = csv.writer(sys.stdout, lineterminator="\n")
++        writer.writerow(("date", "category", "amount", "note"))
++        for r in filtered:
++            writer.writerow((r["date"], r["category"], f"{r['amount']:.2f}", r["note"]))
++    elif args.by:
++        groups = _groups(filtered, args.by)
++        first = "Category" if args.by == "category" else "Month"
++        rows_out = [[key.title() if args.by == "category" else key, str(len(items)), _money(sum((x["amount"] for x in items), Decimal(0)), args.currency)] for key, items in groups]
++        print(_table([first, "Count", "Total"], rows_out, total, args.currency, args.no_header), end="")
++    else:
++        rows_out = [[r["date"], r["category"], _money(r["amount"], args.currency), r["note"] if len(r["note"]) <= 24 else r["note"][:23] + "…"] for r in filtered]
++        print(_table(["Date", "Category", "Amount", "Note"], rows_out, total, args.currency, args.no_header), end="")
++    if invalid:
++        noun = "row" if invalid == 1 else "rows"
++        print(f"warning: skipped {invalid} {noun} with invalid amount", file=sys.stderr)
++    return 0
++
++
++def _groups(rows, by):
++    grouped = {}
++    for row in rows:
++        key = row["category"] if by == "category" else (row["date"][:7] if len(row["date"]) >= 7 else row["date"])
++        grouped.setdefault(key, []).append(row)
++    if by == "category":
++        return sorted(grouped.items(), key=lambda item: (-sum((r["amount"] for r in item[1]), Decimal(0)), item[0].casefold()))
++    return sorted(grouped.items())
++
++
++if __name__ == "__main__":
++    raise SystemExit(main(sys.argv[1:]))

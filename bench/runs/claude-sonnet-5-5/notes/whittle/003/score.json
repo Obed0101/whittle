@@ -1,0 +1,25 @@
+{
+  "task": "notes",
+  "arm": "whittle",
+  "run": "003",
+  "checks": 36,
+  "passed": 35,
+  "missed": [
+    "test_n35_duplicate_note"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 605,
+  "agent": {
+    "harness": "claude",
+    "model": "claude-sonnet-5-5",
+    "exit": 0,
+    "seconds": 102.2,
+    "tokens": {
+      "input": 21145,
+      "output": 17103,
+      "cacheRead": 72578,
+      "cost": 0.270114
+    },
+    "turns": 5
+  }
+}

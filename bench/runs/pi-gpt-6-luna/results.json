@@ -1,0 +1,207 @@
+{
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna"
+  },
+  "runs": 220,
+  "cells": {
+    "expense-report/none": {
+      "runs": 10,
+      "delivered": 31.5,
+      "min": 30,
+      "max": 32,
+      "output_tokens": 2464.0,
+      "cost": 0.0027,
+      "seconds": 64.0
+    },
+    "expense-report/terse": {
+      "runs": 10,
+      "delivered": 30.9,
+      "min": 30,
+      "max": 32,
+      "output_tokens": 2635.0,
+      "cost": 0.0026,
+      "seconds": 80.0
+    },
+    "expense-report/ponytail": {
+      "runs": 10,
+      "delivered": 30.5,
+      "min": 29,
+      "max": 32,
+      "output_tokens": 2369.0,
+      "cost": 0.0026,
+      "seconds": 63.0
+    },
+    "expense-report/caveman": {
+      "runs": 10,
+      "delivered": 30.5,
+      "min": 30,
+      "max": 31,
+      "output_tokens": 2557.0,
+      "cost": 0.0029,
+      "seconds": 74.0
+    },
+    "expense-report/whittle": {
+      "runs": 10,
+      "delivered": 30.7,
+      "min": 29,
+      "max": 32,
+      "output_tokens": 2470.0,
+      "cost": 0.0024,
+      "seconds": 63.0
+    },
+    "kanban/none": {
+      "runs": 10,
+      "delivered": 27.6,
+      "min": 26,
+      "max": 30,
+      "output_tokens": 8007.0,
+      "cost": 0.0058,
+      "seconds": 159.0
+    },
+    "kanban/ponytail": {
+      "runs": 10,
+      "delivered": 26.3,
+      "min": 24,
+      "max": 28,
+      "output_tokens": 6317.0,
+      "cost": 0.0051,
+      "seconds": 128.0
+    },
+    "kanban/caveman": {
+      "runs": 10,
+      "delivered": 27,
+      "min": 24,
+      "max": 29,
+      "output_tokens": 7955.0,
+      "cost": 0.0059,
+      "seconds": 161.0
+    },
+    "kanban/whittle": {
+      "runs": 10,
+      "delivered": 31.2,
+      "min": 30,
+      "max": 33,
+      "output_tokens": 6114.0,
+      "cost": 0.0046,
+      "seconds": 124.0
+    },
+    "pricing-page/none": {
+      "runs": 10,
+      "delivered": 23.9,
+      "min": 23,
+      "max": 25,
+      "output_tokens": 4735.0,
+      "cost": 0.0036,
+      "seconds": 97.0
+    },
+    "pricing-page/ponytail": {
+      "runs": 10,
+      "delivered": 24.2,
+      "min": 22,
+      "max": 25,
+      "output_tokens": 4124.0,
+      "cost": 0.0033,
+      "seconds": 85.0
+    },
+    "pricing-page/caveman": {
+      "runs": 10,
+      "delivered": 23.9,
+      "min": 23,
+      "max": 25,
+      "output_tokens": 4328.0,
+      "cost": 0.0034,
+      "seconds": 90.0
+    },
+    "pricing-page/whittle": {
+      "runs": 10,
+      "delivered": 24.1,
+      "min": 23,
+      "max": 25,
+      "output_tokens": 4694.0,
+      "cost": 0.0034,
+      "seconds": 98.0
+    },
+    "report-over-time/none": {
+      "runs": 10,
+      "delivered": 38.5,
+      "min": 38,
+      "max": 40,
+      "output_tokens": 5842.0,
+      "cost": 0.0081,
+      "seconds": 179.0
+    },
+    "report-over-time/ponytail": {
+      "runs": 10,
+      "delivered": 38.9,
+      "min": 37,
+      "max": 40,
+      "output_tokens": 5517.0,
+      "cost": 0.008,
+      "seconds": 163.0
+    },
+    "report-over-time/caveman": {
+      "runs": 10,
+      "delivered": 38.6,
+      "min": 38,
+      "max": 40,
+      "output_tokens": 6093.0,
+      "cost": 0.0081,
+      "seconds": 183.0
+    },
+    "report-over-time/whittle": {
+      "runs": 10,
+      "delivered": 38.7,
+      "min": 37,
+      "max": 40,
+      "output_tokens": 5964.0,
+      "cost": 0.0077,
+      "seconds": 180.0
+    },
+    "status-page/none": {
+      "runs": 10,
+      "delivered": 35.7,
+      "min": 35,
+      "max": 36,
+      "output_tokens": 2215.0,
+      "cost": 0.0023,
+      "seconds": 62.0
+    },
+    "status-page/terse": {
+      "runs": 10,
+      "delivered": 35.6,
+      "min": 35,
+      "max": 36,
+      "output_tokens": 2243.0,
+      "cost": 0.0025,
+      "seconds": 57.0
+    },
+    "status-page/ponytail": {
+      "runs": 10,
+      "delivered": 35.5,
+      "min": 35,
+      "max": 36,
+      "output_tokens": 2014.0,
+      "cost": 0.0025,
+      "seconds": 57.0
+    },
+    "status-page/caveman": {
+      "runs": 10,
+      "delivered": 35.8,
+      "min": 35,
+      "max": 36,
+      "output_tokens": 2216.0,
+      "cost": 0.0024,
+      "seconds": 57.0
+    },
+    "status-page/whittle": {
+      "runs": 10,
+      "delivered": 35.6,
+      "min": 35,
+      "max": 36,
+      "output_tokens": 2217.0,
+      "cost": 0.0021,
+      "seconds": 54.0
+    }
+  }
+}

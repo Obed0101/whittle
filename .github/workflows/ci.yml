@@ -1,0 +1,20 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Agent files match the skill
+        run: python3 scripts/build.py --check
+      - name: Tasks are valid
+        run: python3 bench/bench.py validate
+      - name: Published tables regenerate from the committed runs
+        run: |
+          for runs in bench/runs/*/; do python3 bench/bench.py summarize "$runs" > /dev/null; done
+          git diff --exit-code -- bench/runs

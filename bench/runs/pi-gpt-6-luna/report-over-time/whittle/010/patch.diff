@@ -1,0 +1,197 @@
+diff --git a/app/report.py b/app/report.py
+new file mode 100644
+index 0000000..5d13100
+--- /dev/null
++++ b/app/report.py
+@@ -0,0 +1,191 @@
++"""Render expense CSV files as reports."""
++import argparse
++import csv
++from datetime import date
++from decimal import Decimal, InvalidOperation
++import json
++import sys
++
++from app.expenses import load
++
++
++def _parser():
++    parser = argparse.ArgumentParser(description="Report expenses from a CSV file.")
++    parser.add_argument("path", metavar="PATH")
++    parser.add_argument("--category", action="append", default=[], metavar="NAME")
++    parser.add_argument("--exclude", action="append", default=[], metavar="NAME")
++    parser.add_argument("--from", dest="from_date", metavar="DATE")
++    parser.add_argument("--to", dest="to_date", metavar="DATE")
++    parser.add_argument("--min", dest="minimum", metavar="AMOUNT")
++    parser.add_argument("--by", choices=("category", "month"))
++    parser.add_argument("--format", choices=("table", "json", "csv", "markdown"), default="table")
++    parser.add_argument("--currency", default="", metavar="SYMBOL")
++    parser.add_argument("--top", type=int, metavar="N")
++    parser.add_argument("--no-header", action="store_true")
++    parser.epilog = "Example: python -m app.report expenses.csv --by month"
++    return parser
++
++
++def _date(value):
++    try:
++        return date.fromisoformat(value)
++    except (ValueError, TypeError):
++        raise ValueError(value)
++
++
++def _money(value, currency=""):
++    amount = f"{abs(value):,.2f}"
++    return f"({currency}{amount})" if value < 0 else currency + amount
++
++
++def _table(rows, grouped, currency, no_header):
++    if grouped:
++        headings = ["Category" if grouped == "category" else "Month", "Count", "Total"]
++        records = [[r["group"], str(r["count"]), _money(r["total"], currency)] for r in rows]
++        records.append(["Total", str(sum(r["count"] for r in rows)),
++                        _money(sum((r["total"] for r in rows), Decimal(0)), currency)])
++    else:
++        headings = ["Date", "Category", "Amount", "Note"]
++        records = []
++        for row in rows:
++            note = row["note"] or ""
++            records.append([row["date"], row["category"], _money(row["amount"], currency),
++                            note[:23] + "…" if len(note) > 24 else note])
++        records.append(["Total", "", _money(sum((r["amount"] for r in rows), Decimal(0)), currency), ""])
++    widths = [max(len(headings[i]), *(len(row[i]) for row in records)) for i in range(len(headings))]
++
++    def line(record):
++        return "  ".join(cell.rjust(widths[i]) if i == 2 else cell.ljust(widths[i])
++                         for i, cell in enumerate(record)).rstrip()
++
++    output = []
++    if not no_header:
++        output.extend((line(headings), "  ".join("-" * width for width in widths).rstrip()))
++    output.extend(line(row) for row in records)
++    return "\n".join(output) + "\n"
++
++
++def _markdown(rows, currency):
++    def cell(value):
++        return str(value).replace("|", r"\|").replace("\n", "<br>")
++
++    lines = ["| Date | Category | Amount | Note |", "| --- | --- | ---: | --- |"]
++    for row in rows:
++        lines.append("| {} | {} | {} | {} |".format(
++            cell(row["date"]), cell(row["category"]),
++            cell(_money(row["amount"], currency)), cell(row["note"] or "")))
++    total = sum((row["amount"] for row in rows), Decimal(0))
++    lines.append("| Total | | {} | |".format(cell(_money(total, currency))))
++    return "\n".join(lines) + "\n"
++
++
++def _groups(rows, by):
++    totals = {}
++    for row in rows:
++        key = row["category"] if by == "category" else row["date"][:7]
++        count, total = totals.get(key, (0, Decimal(0)))
++        totals[key] = count + 1, total + row["amount"]
++    result = [{"group": key, "count": count, "total": total}
++              for key, (count, total) in totals.items()]
++    result.sort(key=(lambda row: (-row["total"], row["group"].casefold()))
++                if by == "category" else lambda row: row["group"])
++    return result
++
++
++def _records(rows):
++    valid, skipped = [], 0
++    for index, row in enumerate(rows):
++        try:
++            amount = Decimal(row.get("amount", ""))
++            if not amount.is_finite():
++                raise InvalidOperation
++        except (InvalidOperation, ValueError, TypeError):
++            skipped += 1
++            continue
++        value = row.get("date", "")
++        try:
++            parsed_date = _date(value)
++        except ValueError:
++            raise ValueError(f"invalid date: {value}")
++        valid.append({"date": value, "_date": parsed_date, "category": row.get("category", ""),
++                      "amount": amount, "note": row.get("note", ""), "_index": index})
++    return valid, skipped
++
++
++def main(argv: list[str]) -> int:
++    parser = _parser()
++    try:
++        args = parser.parse_args(argv)
++    except SystemExit as exc:
++        return int(exc.code)
++
++    try:
++        start = _date(args.from_date) if args.from_date is not None else None
++        end = _date(args.to_date) if args.to_date is not None else None
++    except ValueError as exc:
++        print(f"error: invalid date: {exc.args[0]}", file=sys.stderr)
++        return 2
++    if start and end and start > end:
++        print("error: --from is after --to", file=sys.stderr)
++        return 2
++    try:
++        raw = load(args.path)
++    except FileNotFoundError:
++        print(f"error: file not found: {args.path}", file=sys.stderr)
++        return 2
++    try:
++        rows, skipped = _records(raw)
++    except ValueError as exc:
++        print(f"error: {exc}", file=sys.stderr)
++        return 2
++    if args.minimum is not None:
++        try:
++            minimum = Decimal(args.minimum)
++        except InvalidOperation:
++            parser.error("--min must be a number")
++        rows = [row for row in rows if row["amount"] >= minimum]
++
++    included = {name.casefold() for name in args.category}
++    excluded = {name.casefold() for name in args.exclude}
++    rows = [row for row in rows if
++            (not included or row["category"].casefold() in included)
++            and row["category"].casefold() not in excluded
++            and (start is None or row["_date"] >= start)
++            and (end is None or row["_date"] <= end)]
++    rows.sort(key=lambda row: (row["_date"], row["_index"]))
++    if args.top is not None:
++        rows = sorted(rows, key=lambda row: row["amount"], reverse=True)[:max(0, args.top)]
++
++    if not rows:
++        print("No expenses.")
++    elif args.format == "json":
++        data = _groups(rows, args.by) if args.by else rows
++        if args.by:
++            data = [{"group": row["group"], "count": row["count"], "total": float(row["total"])}
++                    for row in data]
++        else:
++            data = [{key: (float(row[key]) if key == "amount" else row[key])
++                     for key in ("date", "category", "amount", "note")} for row in data]
++        print(json.dumps(data, indent=2))
++    elif args.format == "csv":
++        writer = csv.writer(sys.stdout, lineterminator="\n")
++        writer.writerow(["date", "category", "amount", "note"])
++        for row in rows:
++            writer.writerow([row["date"], row["category"], f"{row['amount']:.2f}", row["note"]])
++    elif args.format == "markdown":
++        print(_markdown(rows, args.currency), end="")
++    else:
++        grouped = _groups(rows, args.by) if args.by else None
++        if args.by == "category":
++            for row in grouped:
++                row["group"] = row["group"].title()
++        print(_table(grouped if args.by else rows, args.by, args.currency, args.no_header), end="")
++
++    if skipped:
++        noun = "row" if skipped == 1 else "rows"
++        print(f"warning: skipped {skipped} {noun} with invalid amount", file=sys.stderr)
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main(sys.argv[1:]))

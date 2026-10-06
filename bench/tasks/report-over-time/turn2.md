@@ -1,0 +1,1 @@
+Finance asked for one more filter in the expense report (`app/report.py`): `--exclude NAME` leaves a category out. Like `--category`, it ignores case and can be repeated. Totals only count what is shown. Add it to `--help`.

@@ -1,0 +1,27 @@
+{
+  "task": "status-page",
+  "arm": "ponytail",
+  "run": "010",
+  "checks": 36,
+  "passed": 35,
+  "missed": [
+    "test_r11_banner_singular"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 94,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 52.7,
+    "tokens": {
+      "input": 10901,
+      "output": 2093,
+      "cacheRead": 25600,
+      "cost": 0.002393
+    },
+    "turns": 7,
+    "tool_calls": 8
+  }
+}
