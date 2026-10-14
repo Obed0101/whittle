@@ -1,0 +1,25 @@
+{
+  "task": "report-over-time",
+  "arm": "ponytail",
+  "run": "007",
+  "checks": 40,
+  "passed": 40,
+  "missed": [],
+  "existing_tests_pass": true,
+  "lines_added": 172,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 84.3,
+    "tokens": {
+      "input": 38499,
+      "output": 4426,
+      "cacheRead": 59904,
+      "cost": 0.006662
+    },
+    "turns": 24,
+    "tool_calls": 27
+  }
+}

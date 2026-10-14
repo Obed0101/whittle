@@ -1,0 +1,154 @@
+diff --git a/app/report.py b/app/report.py
+new file mode 100644
+index 0000000..34e2ff4
+--- /dev/null
++++ b/app/report.py
+@@ -0,0 +1,148 @@
++"""Generate filtered expense reports."""
++import argparse
++import csv
++import json
++import sys
++from collections import defaultdict
++from datetime import date
++from decimal import Decimal, InvalidOperation
++from pathlib import Path
++
++from app.expenses import load
++
++
++def _parser():
++    parser = argparse.ArgumentParser(prog="python -m app.report", description="Report expenses from a CSV file.")
++    parser.add_argument("path")
++    parser.add_argument("--category", action="append", dest="categories")
++    parser.add_argument("--from", dest="date_from")
++    parser.add_argument("--to", dest="date_to")
++    parser.add_argument("--min", dest="minimum")
++    parser.add_argument("--by", choices=("category", "month"))
++    parser.add_argument("--format", default="table")
++    parser.add_argument("--currency", default="")
++    parser.add_argument("--top", type=int)
++    parser.add_argument("--no-header", action="store_true")
++    parser.epilog = "Example: python -m app.report expenses.csv --by month"
++    return parser
++
++
++def _date(value):
++    try:
++        return date.fromisoformat(value)
++    except (TypeError, ValueError):
++        raise ValueError(value)
++
++
++def _money(value):
++    try:
++        result = Decimal(value)
++        if not result.is_finite():
++            raise InvalidOperation
++        return result
++    except (InvalidOperation, TypeError, ValueError):
++        return None
++
++
++def _amount(value, currency=""):
++    number = Decimal(value)
++    if number < 0:
++        return f"({currency}{abs(number):,.2f})"
++    return f"{currency}{number:,.2f}"
++
++
++def main(argv: list[str]) -> int:
++    parser = _parser()
++    args = parser.parse_args(argv)
++    if args.format not in ("table", "json", "csv"):
++        print(f"error: unknown format: {args.format}", file=sys.stderr)
++        return 2
++    try:
++        lower = _date(args.date_from) if args.date_from else None
++        upper = _date(args.date_to) if args.date_to else None
++    except ValueError as exc:
++        print(f"error: invalid date: {exc.args[0]}", file=sys.stderr)
++        return 2
++    if lower and upper and lower > upper:
++        print("error: --from is after --to", file=sys.stderr)
++        return 2
++    try:
++        rows = load(args.path)
++    except FileNotFoundError:
++        print(f"error: file not found: {args.path}", file=sys.stderr)
++        return 2
++    valid = []
++    skipped = 0
++    for index, row in enumerate(rows):
++        amount = _money(row.get("amount"))
++        if amount is None:
++            skipped += 1
++            continue
++        row_date = _date(row.get("date"))
++        valid.append((row_date, index, row, amount))
++    selected = [item for item in valid
++                if (not args.categories or item[2].get("category", "").casefold() in {c.casefold() for c in args.categories})
++                and (lower is None or item[0] >= lower)
++                and (upper is None or item[0] <= upper)
++                and (args.minimum is None or item[3] >= (_money(args.minimum) or Decimal(0)))]
++    if args.top is not None:
++        selected = sorted(selected, key=lambda item: -item[3])[:max(args.top, 0)]
++    selected.sort(key=lambda item: (item[0], item[1]))
++    total = sum((item[3] for item in selected), Decimal(0))
++
++    if not selected:
++        print("No expenses.")
++    elif args.format == "json":
++        if args.by:
++            objects = _groups(selected, args.by)
++            print(json.dumps(objects, indent=2))
++        else:
++            print(json.dumps([{"date": r["date"], "category": r["category"], "amount": float(a), "note": r.get("note", "")} for _, _, r, a in selected], indent=2))
++    elif args.format == "csv":
++        writer = csv.writer(sys.stdout, lineterminator="\n")
++        writer.writerow(("date", "category", "amount", "note"))
++        for _, _, row, amount in selected:
++            writer.writerow((row["date"], row["category"], f"{amount:.2f}", row.get("note", "")))
++    elif args.by:
++        groups = _groups(selected, args.by)
++        key_name = "Category" if args.by == "category" else "Month"
++        lines = []
++        if not args.no_header:
++            lines.extend((f"{key_name:<20} {'Count':>7} {'Total':>15}", "-" * 44))
++        for group in groups:
++            label = group["group"].title() if args.by == "category" else group["group"]
++            lines.append(f"{label:<20} {group['count']:>7} {_amount(group['total'], args.currency):>15}")
++        lines.append(f"{'Total':<20} {'':>7} {_amount(total, args.currency):>15}")
++        print("\n".join(lines))
++    else:
++        lines = []
++        if not args.no_header:
++            lines.extend((f"{'Date':<10}  {'Category':<16}  {'Amount':>12}  Note", "-" * 70))
++        for _, _, row, amount in selected:
++            note = row.get("note", "")
++            if len(note) > 24:
++                note = note[:23] + "…"
++            lines.append(f"{row['date']:<10}  {row['category']:<16}  {_amount(amount, args.currency):>12}  {note}")
++        lines.append(f"Total{'':<30}{_amount(total, args.currency):>12}")
++        print("\n".join(lines))
++    if skipped:
++        noun = "row" if skipped == 1 else "rows"
++        print(f"warning: skipped {skipped} {noun} with invalid amount", file=sys.stderr)
++    return 0
++
++
++def _groups(selected, by):
++    groups = defaultdict(list)
++    for day, _, row, amount in selected:
++        key = row.get("category", "") if by == "category" else day.strftime("%Y-%m")
++        groups[key].append(amount)
++    result = [{"group": key, "count": len(values), "total": float(sum(values, Decimal(0)))} for key, values in groups.items()]
++    if by == "category":
++        result.sort(key=lambda item: (-item["total"], item["group"].casefold()))
++    else:
++        result.sort(key=lambda item: item["group"])
++    return result
++
++
++if __name__ == "__main__":
++    raise SystemExit(main(sys.argv[1:]))

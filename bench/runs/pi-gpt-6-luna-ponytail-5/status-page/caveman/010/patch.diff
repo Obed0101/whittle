@@ -1,0 +1,137 @@
+diff --git a/app/page.py b/app/page.py
+new file mode 100644
+index 0000000..9b0f856
+--- /dev/null
++++ b/app/page.py
+@@ -0,0 +1,131 @@
++"""Render a self-contained public status page."""
++import argparse
++import datetime
++import html
++import re
++
++from app.status import STATES, load
++
++_STATE_LABELS = {
++    "operational": "Operational",
++    "degraded": "Degraded performance",
++    "outage": "Major outage",
++    "maintenance": "Under maintenance",
++}
++_SEVERITY = {"outage": 0, "degraded": 1, "maintenance": 2, "operational": 3}
++
++
++def _escape(value):
++    return html.escape(str(value), quote=True)
++
++
++def _service_id(name):
++    slug = "".join(char.lower() if char.isalnum() else "-" for char in str(name))
++    return "service-" + re.sub(r"-+", "-", slug).strip("-")
++
++
++def render(services: list[dict], generated_at: str) -> str:
++    """Return an accessible, standalone HTML status page."""
++    for service in services:
++        state = service["state"]
++        if state not in STATES:
++            raise ValueError(f"unknown state: {state}")
++
++    ordered = sorted(services, key=lambda item: (_SEVERITY[item["state"]], str(item["name"]).casefold()))
++    count = len(services)
++    operational = sum(item["state"] == "operational" for item in services)
++    if count:
++        title = f"Status · {operational} of {count} operational"
++        attention = sum(item["state"] in ("degraded", "outage") for item in services)
++        maintenance = sum(item["state"] == "maintenance" for item in services)
++        if any(item["state"] == "outage" for item in services):
++            modifier = "banner--down"
++        elif any(item["state"] == "degraded" for item in services):
++            modifier = "banner--warn"
++        else:
++            modifier = "banner--ok"
++        if attention:
++            banner_text = f"{attention} of {count} service{'s' if attention != 1 else ''} {'need' if attention != 1 else 'needs'} attention"
++        else:
++            banner_text = "All systems operational"
++        if maintenance:
++            banner_text += f" · {maintenance} under maintenance"
++        banner = f'<p class="banner {modifier}" role="status">{_escape(banner_text)}</p>'
++        items = []
++        for service in ordered:
++            state = service["state"]
++            name = _escape(service["name"])
++            url = service.get("url")
++            if url:
++                safe_url = _escape(url)
++                rel = ' rel="noopener"' if re.match(r"^https?://", str(url), re.IGNORECASE) else ""
++                heading = f'<a href="{safe_url}"{rel}>{name}</a>'
++            else:
++                heading = name
++            pieces = [f'<li class="service" id="{_escape(_service_id(service["name"]))}" data-state="{_escape(state)}">',
++                      '<span class="dot" aria-hidden="true"></span>', f'<h2>{heading}</h2>',
++                      f'<span class="state">{_STATE_LABELS[state]}</span>']
++            if service.get("note"):
++                pieces.append(f'<p class="note">{_escape(service["note"])}</p>')
++            if service.get("uptime") is not None:
++                pieces.append(f'<span class="uptime">{float(service["uptime"]):.2f}% uptime</span>')
++            pieces.append("</li>")
++            items.append("".join(pieces))
++        content = banner + '<main><ul class="services">' + "".join(items) + '</ul></main>'
++    else:
++        title = "Status · no services"
++        content = '<main><p class="empty">No services configured.</p></main>'
++
++    timestamp = _escape(generated_at)
++    return f'''<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>{_escape(title)}</title>
++<style>
++:root {{ --bg: #f7f8fa; --text: #20252b; --ok: #16803c; --warn: #a15c00; --down: #bd2424; --maint: #5367a5; }}
++@media (prefers-color-scheme: dark) {{ :root {{ --bg: #171a1f; --text: #edf0f4; }} }}
++* {{ box-sizing: border-box; }}
++body {{ margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }}
++header, .banner, main, footer {{ max-width: 640px; margin-left: auto; margin-right: auto; }}
++h1 {{ margin-top: 0; }}
++.banner {{ padding: 1rem; border-radius: .5rem; }}
++.banner--ok {{ background: color-mix(in srgb, var(--ok) 12%, var(--bg)); }}
++.banner--warn {{ background: color-mix(in srgb, var(--warn) 14%, var(--bg)); }}
++.banner--down {{ background: color-mix(in srgb, var(--down) 14%, var(--bg)); }}
++.services {{ list-style: none; padding: 0; }}
++.service {{ display: flex; align-items: center; gap: 1rem; padding: 1rem; border-bottom: 1px solid #8885; }}
++.service h2 {{ font-size: 1.1rem; margin: 0; flex: 1; }}
++.service p {{ margin: 0; }}
++.state, .uptime {{ white-space: nowrap; }}
++.dot {{ width: .7rem; height: .7rem; border-radius: 50%; flex: none; background: var(--ok); }}
++[data-state="operational"] .dot {{ background: var(--ok); }}
++[data-state="degraded"] .dot {{ background: var(--warn); }}
++[data-state="outage"] .dot {{ background: var(--down); animation: pulse 1.5s ease-in-out infinite; }}
++[data-state="maintenance"] .dot {{ background: var(--maint); }}
++@keyframes pulse {{ 50% {{ opacity: .35; }} }}
++@media (prefers-reduced-motion: reduce) {{ [data-state="outage"] .dot {{ animation: none; }} }}
++a:focus-visible {{ outline: 3px solid #2878d0; outline-offset: 3px; }}
++@media (max-width: 480px) {{ .service {{ flex-direction: column; align-items: flex-start; }} }}
++footer {{ margin-top: 2rem; color: #777; }}
++</style>
++</head>
++<body>
++<header><h1>System status</h1></header>
++{content}
++<footer><time datetime="{timestamp}">Updated {timestamp}</time></footer>
++</body>
++</html>'''
++
++
++def main():
++    parser = argparse.ArgumentParser(description="Render a status page from services JSON")
++    parser.add_argument("services_json")
++    args = parser.parse_args()
++    generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
++    print(render(load(args.services_json), generated_at))
++
++
++if __name__ == "__main__":
++    main()

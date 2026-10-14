@@ -1,0 +1,27 @@
+{
+  "task": "pricing-page",
+  "arm": "caveman",
+  "run": "004",
+  "checks": 26,
+  "passed": 25,
+  "missed": [
+    "test_b05_monthly_prices"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 95,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 39.1,
+    "tokens": {
+      "input": 10061,
+      "output": 5055,
+      "cacheRead": 18944,
+      "cost": 0.003723
+    },
+    "turns": 7,
+    "tool_calls": 6
+  }
+}

@@ -1,0 +1,312 @@
+diff --git a/notes/app.js b/notes/app.js
+new file mode 100644
+index 0000000..d89e437
+--- /dev/null
++++ b/notes/app.js
+@@ -0,0 +1,217 @@
++'use strict';
++const KEY = 'notes.v1';
++const $ = id => document.getElementById(id);
++let notes = [];
++let curId = null;
++let saveTimer = null;
++
++function load() {
++  try {
++    const d = JSON.parse(localStorage.getItem(KEY) || '[]');
++    notes = Array.isArray(d) ? d.filter(n => n && n.id).map(clean) : [];
++  } catch (e) { notes = []; }
++}
++
++function clean(n) {
++  return {
++    id: String(n.id),
++    title: String(n.title || ''),
++    body: String(n.body || ''),
++    tags: Array.isArray(n.tags) ? n.tags.map(String) : [],
++    pinned: !!n.pinned,
++    created: +n.created || Date.now(),
++    updated: +n.updated || Date.now(),
++  };
++}
++
++function save() {
++  clearTimeout(saveTimer);
++  saveTimer = null;
++  try { localStorage.setItem(KEY, JSON.stringify(notes)); }
++  catch (e) { alert('Could not save notes (storage full or blocked). Use Export to back up your notes.'); }
++}
++
++function queueSave() {
++  clearTimeout(saveTimer);
++  saveTimer = setTimeout(save, 300);
++}
++
++const cur = () => notes.find(n => n.id === curId);
++const parseTags = s => [...new Set(s.split(',').map(t => t.trim().toLowerCase()).filter(Boolean))];
++
++function visible() {
++  const q = $('search').value.trim().toLowerCase();
++  const tag = $('tagFilter').value;
++  return notes
++    .filter(n => !tag || n.tags.includes(tag))
++    .filter(n => !q || (n.title + '\n' + n.body + '\n' + n.tags.join(' ')).toLowerCase().includes(q))
++    .sort((a, b) => b.pinned - a.pinned || b.updated - a.updated);
++}
++
++function renderTags() {
++  const sel = $('tagFilter');
++  const prev = sel.value;
++  const tags = [...new Set(notes.flatMap(n => n.tags))].sort();
++  sel.replaceChildren(new Option('All tags', ''), ...tags.map(t => new Option('#' + t, t)));
++  sel.value = tags.includes(prev) ? prev : '';
++}
++
++function renderList() {
++  const items = visible();
++  const ul = $('list');
++  ul.replaceChildren();
++  if (!items.length) {
++    const li = document.createElement('li');
++    li.className = 'none';
++    li.textContent = notes.length ? 'No matches.' : 'No notes yet.';
++    ul.append(li);
++  }
++  for (const n of items) {
++    const li = document.createElement('li');
++    li.className = n.id === curId ? 'sel' : '';
++    li.tabIndex = 0;
++    const t = document.createElement('div');
++    t.className = 't';
++    t.textContent = (n.pinned ? '★ ' : '') + (n.title || 'Untitled');
++    const p = document.createElement('div');
++    p.className = 'p';
++    p.textContent = new Date(n.updated).toLocaleDateString() + ' · ' + (n.body.replace(/\s+/g, ' ').slice(0, 80) || 'No content');
++    li.append(t, p);
++    li.onclick = () => select(n.id);
++    li.onkeydown = e => { if (e.key === 'Enter') select(n.id); };
++    ul.append(li);
++  }
++  $('count').textContent = notes.length + (notes.length === 1 ? ' note' : ' notes');
++}
++
++function renderMeta(n) {
++  $('meta').textContent = 'Created ' + new Date(n.created).toLocaleString() +
++    ' · Edited ' + new Date(n.updated).toLocaleString() + ' · ' + n.body.length + ' chars';
++}
++
++function renderEditor() {
++  const n = cur();
++  $('form').hidden = !n;
++  $('empty').hidden = !!n;
++  document.body.classList.toggle('editing', !!n);
++  if (!n) return;
++  if ($('title').value !== n.title) $('title').value = n.title;
++  if ($('body').value !== n.body) $('body').value = n.body;
++  $('tags').value = n.tags.join(', ');
++  $('pin').textContent = n.pinned ? '★' : '☆';
++  renderMeta(n);
++}
++
++function select(id) {
++  curId = id;
++  renderList();
++  renderEditor();
++}
++
++function touch(n) {
++  n.updated = Date.now();
++  queueSave();
++  renderMeta(n);
++  renderTags();
++  renderList();
++}
++
++function newNote() {
++  $('search').value = '';
++  $('tagFilter').value = '';
++  const t = Date.now();
++  const n = { id: t.toString(36) + Math.random().toString(36).slice(2, 6), title: '', body: '', tags: [], pinned: false, created: t, updated: t };
++  notes.push(n);
++  save();
++  select(n.id);
++  $('title').focus();
++}
++
++function download(name, text) {
++  const a = document.createElement('a');
++  a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
++  a.download = name;
++  a.click();
++  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
++}
++
++$('new').onclick = newNote;
++$('back').onclick = () => { curId = null; renderList(); renderEditor(); };
++$('search').oninput = renderList;
++$('tagFilter').onchange = renderList;
++
++$('title').oninput = e => { const n = cur(); if (n) { n.title = e.target.value; touch(n); } };
++$('body').oninput = e => { const n = cur(); if (n) { n.body = e.target.value; touch(n); } };
++$('tags').onchange = e => {
++  const n = cur();
++  if (!n) return;
++  n.tags = parseTags(e.target.value);
++  e.target.value = n.tags.join(', ');
++  touch(n);
++};
++$('pin').onclick = () => {
++  const n = cur();
++  if (!n) return;
++  n.pinned = !n.pinned;
++  $('pin').textContent = n.pinned ? '★' : '☆';
++  touch(n);
++};
++$('del').onclick = () => {
++  const n = cur();
++  if (!n || !confirm('Delete "' + (n.title || 'Untitled') + '"? This cannot be undone.')) return;
++  notes = notes.filter(x => x !== n);
++  curId = null;
++  save();
++  renderTags();
++  renderList();
++  renderEditor();
++};
++
++$('export').onclick = () => {
++  save();
++  download('notes-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(notes, null, 2));
++};
++$('import').onclick = () => $('file').click();
++$('file').onchange = async e => {
++  const f = e.target.files[0];
++  e.target.value = '';
++  if (!f) return;
++  try {
++    const d = JSON.parse(await f.text());
++    if (!Array.isArray(d)) throw 0;
++    const have = new Set(notes.map(n => n.id));
++    const add = d.filter(n => n && n.id && !have.has(String(n.id))).map(clean);
++    notes.push(...add);
++    save();
++    renderTags();
++    renderList();
++    alert('Imported ' + add.length + ' new note(s); ' + (d.length - add.length) + ' skipped (already present or invalid).');
++  } catch (err) { alert('That file is not a valid notes export.'); }
++};
++
++document.addEventListener('keydown', e => {
++  const mod = e.ctrlKey || e.metaKey;
++  if (mod && e.altKey && e.code === 'KeyN') { e.preventDefault(); newNote(); }
++  else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
++  else if (e.key === '/' && !/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) { e.preventDefault(); $('search').focus(); }
++  else if (e.key === 'Escape' && document.activeElement === $('search')) { $('search').value = ''; renderList(); }
++});
++
++addEventListener('beforeunload', () => { if (saveTimer) save(); });
++document.addEventListener('visibilitychange', () => { if (document.hidden && saveTimer) save(); });
++// another tab changed the data: reload it (our own writes never fire this event)
++addEventListener('storage', e => {
++  if (e.key !== KEY) return;
++  load();
++  if (!cur()) curId = null;
++  renderTags();
++  renderList();
++  renderEditor();
++});
++
++load();
++renderTags();
++renderList();
++renderEditor();
++// on wide screens open the most recent note; on phones start at the list
++if (innerWidth > 700 && notes.length) select(visible()[0].id);
+diff --git a/notes/index.html b/notes/index.html
+new file mode 100644
+index 0000000..99e1f50
+--- /dev/null
++++ b/notes/index.html
+@@ -0,0 +1,40 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Notes</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<aside id="side">
++  <div class="bar">
++    <input id="search" type="search" placeholder="Search notes  ( / )" aria-label="Search notes">
++    <button id="new" title="New note (Ctrl/Cmd+Alt+N)">+ New</button>
++  </div>
++  <select id="tagFilter" aria-label="Filter by tag"></select>
++  <ul id="list"></ul>
++  <div class="foot">
++    <span id="count"></span>
++    <button id="export">Export</button>
++    <button id="import">Import</button>
++    <input id="file" type="file" accept=".json,application/json" hidden>
++  </div>
++</aside>
++<main id="editor">
++  <div id="empty">No note selected. Press <b>+ New</b> to start.</div>
++  <div id="form" hidden>
++    <div class="bar">
++      <button id="back" title="Back to list">←</button>
++      <input id="title" placeholder="Title" aria-label="Title">
++      <button id="pin" title="Pin note">☆</button>
++      <button id="del" title="Delete note">Delete</button>
++    </div>
++    <input id="tags" placeholder="tags, comma separated" aria-label="Tags">
++    <textarea id="body" placeholder="Write something…" aria-label="Note body"></textarea>
++    <div id="meta"></div>
++  </div>
++</main>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/notes/style.css b/notes/style.css
+new file mode 100644
+index 0000000..bac744f
+--- /dev/null
++++ b/notes/style.css
+@@ -0,0 +1,37 @@
++:root{--bg:#fff;--fg:#1c1c1e;--mut:#777;--line:#e2e2e5;--side:#f6f6f8;--sel:#dce8ff;--acc:#2a62d9}
++@media(prefers-color-scheme:dark){:root{--bg:#1b1b1e;--fg:#e8e8ea;--mut:#9a9aa0;--line:#33333a;--side:#242428;--sel:#2d3b5c;--acc:#7aa2ff}}
++*{box-sizing:border-box}
++html,body{height:100%;margin:0}
++body{display:flex;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
++button,input,select,textarea{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
++button{cursor:pointer}
++button:hover{border-color:var(--acc)}
++:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
++#side{width:300px;flex:none;background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
++.bar{display:flex;gap:6px;padding:10px}
++.bar input{flex:1;min-width:0}
++#tagFilter{margin:0 10px 8px}
++#list{list-style:none;margin:0;padding:0;overflow:auto;flex:1}
++#list li{padding:8px 12px;border-bottom:1px solid var(--line);cursor:pointer}
++#list li.sel{background:var(--sel)}
++#list .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++#list .p{color:var(--mut);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++#list .none{color:var(--mut);cursor:default}
++.foot{display:flex;gap:6px;align-items:center;padding:10px;border-top:1px solid var(--line)}
++#count{flex:1;color:var(--mut);font-size:13px}
++#editor{flex:1;min-width:0;display:flex}
++#empty{margin:auto;color:var(--mut)}
++#form{flex:1;display:flex;flex-direction:column;min-width:0}
++#form[hidden],#empty[hidden]{display:none}
++#title{font-size:18px;font-weight:600}
++#tags{margin:0 10px;font-size:13px}
++#body{flex:1;margin:10px;resize:none;line-height:1.6}
++#meta{padding:0 12px 10px;color:var(--mut);font-size:12px}
++#back{display:none}
++@media(max-width:700px){
++  #side{width:100%;border:0}
++  #editor{display:none;width:100%}
++  body.editing #side{display:none}
++  body.editing #editor{display:flex}
++  #back{display:block}
++}

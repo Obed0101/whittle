@@ -1,0 +1,324 @@
+diff --git a/notes/app.js b/notes/app.js
+new file mode 100644
+index 0000000..3ec5c29
+--- /dev/null
++++ b/notes/app.js
+@@ -0,0 +1,208 @@
++'use strict';
++const KEY = 'notes.v1';
++const $ = id => document.getElementById(id);
++let notes = load(), cur = null, tag = '', query = '', preview = false, saveT, lastDel = null, toastT;
++
++function load() {
++  try {
++    const a = JSON.parse(localStorage.getItem(KEY) || '[]');
++    return Array.isArray(a) ? a.filter(valid) : [];
++  } catch { return []; }
++}
++function valid(n) {
++  return n && typeof n.id === 'string' && typeof n.title === 'string' && typeof n.body === 'string' &&
++    Array.isArray(n.tags) && typeof n.updated === 'number';
++}
++function save() {
++  clearTimeout(saveT);
++  try { localStorage.setItem(KEY, JSON.stringify(notes)); $('status').textContent = 'Saved'; }
++  catch { $('status').textContent = 'NOT SAVED'; toast('Could not save: browser storage is full or blocked. Export your notes.'); }
++}
++const queueSave = () => { $('status').textContent = 'Saving…'; clearTimeout(saveT); saveT = setTimeout(save, 300); };
++const get = id => notes.find(n => n.id === id);
++const isEmpty = n => !n.title.trim() && !n.body.trim() && !n.tags.length;
++
++function toast(msg, undo) {
++  $('toastMsg').textContent = msg; $('undo').hidden = !undo; $('toast').hidden = false;
++  clearTimeout(toastT); toastT = setTimeout(() => $('toast').hidden = true, 6000);
++}
++
++function fmt(t) {
++  const d = new Date(t), now = new Date();
++  return d.toDateString() === now.toDateString()
++    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
++    : d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
++}
++
++function renderList() {
++  const q = query.trim().toLowerCase();
++  const all = [...new Set(notes.flatMap(n => n.tags))].sort();
++  if (tag && !all.includes(tag)) tag = '';
++  const tg = $('tags'); tg.textContent = '';
++  all.forEach(t => {
++    const b = document.createElement('button'); b.textContent = '#' + t;
++    b.className = t === tag ? 'on' : ''; b.onclick = () => { tag = tag === t ? '' : t; renderList(); };
++    tg.append(b);
++  });
++  const shown = notes
++    .filter(n => (!tag || n.tags.includes(tag)) &&
++      (!q || (n.title + '\n' + n.body + '\n' + n.tags.join(' ')).toLowerCase().includes(q)))
++    .sort((a, b) => (b.pinned | 0) - (a.pinned | 0) || b.updated - a.updated);
++  const ul = $('list'); ul.textContent = '';
++  shown.forEach(n => {
++    const li = document.createElement('li'), b = document.createElement('button');
++    const t = document.createElement('b'), s = document.createElement('small');
++    t.textContent = (n.pinned ? '📌 ' : '') + (n.title.trim() || 'Untitled');
++    s.textContent = fmt(n.updated) + '  ' + n.body.replace(/\s+/g, ' ').slice(0, 80);
++    b.append(t, s); b.onclick = () => open(n.id);
++    li.append(b); if (n.id === cur) li.className = 'sel'; ul.append(li);
++  });
++  if (!shown.length) {
++    const li = document.createElement('li'); li.className = 'none';
++    li.textContent = notes.length ? 'No matching notes.' : 'No notes yet. Press “New”.'; ul.append(li);
++  }
++  $('count').textContent = notes.length + (notes.length === 1 ? ' note' : ' notes');
++}
++
++function renderEditor() {
++  const n = get(cur);
++  $('editor').hidden = !n; $('empty').hidden = !!n;
++  $('app').classList.toggle('editing', !!n);
++  if (!n) return;
++  if ($('title').value !== n.title) $('title').value = n.title;
++  if ($('body').value !== n.body) $('body').value = n.body;
++  const tg = n.tags.join(', ');
++  if ($('tagIn').value !== tg && document.activeElement !== $('tagIn')) $('tagIn').value = tg;
++  $('pin').classList.toggle('on', !!n.pinned);
++  $('mode').classList.toggle('on', preview);
++  $('mode').textContent = preview ? 'Edit' : 'Preview';
++  $('body').hidden = preview; $('preview').hidden = !preview;
++  if (preview) $('preview').innerHTML = md(n.body);
++  meta();
++}
++function meta() {
++  const n = get(cur); if (!n) return;
++  const w = (n.body.trim().match(/\S+/g) || []).length;
++  $('meta').textContent = `${w} word${w === 1 ? '' : 's'} · ${n.body.length} chars · created ${new Date(n.created).toLocaleString()} · edited ${new Date(n.updated).toLocaleString()}`;
++}
++
++function dropIfEmpty() {
++  const n = cur && get(cur);
++  if (n && isEmpty(n)) { notes = notes.filter(x => x !== n); save(); }
++}
++function open(id) {
++  if (id !== cur) { dropIfEmpty(); preview = false; }
++  cur = id; renderEditor(); renderList();
++}
++function create() {
++  const e = cur && get(cur);
++  if (e && isEmpty(e)) { $('title').focus(); return; }
++  dropIfEmpty();
++  const t = Date.now();
++  const n = { id: t.toString(36) + Math.random().toString(36).slice(2, 8), title: '', body: '', tags: [], pinned: false, created: t, updated: t };
++  notes.push(n); query = ''; $('q').value = ''; tag = '';
++  preview = false; cur = n.id; save(); renderEditor(); renderList(); $('title').focus();
++}
++function touch() {
++  const n = get(cur); n.updated = Date.now(); queueSave(); renderList(); meta();
++}
++
++function remove() {
++  const n = get(cur); if (!n) return;
++  lastDel = n; notes = notes.filter(x => x !== n); cur = null; save();
++  renderEditor(); renderList(); toast('Note deleted.', true);
++}
++$('undo').onclick = () => {
++  if (!lastDel) return;
++  notes.push(lastDel); cur = lastDel.id; lastDel = null; $('toast').hidden = true;
++  save(); renderEditor(); renderList();
++};
++
++// Markdown: input is escaped first, so output is safe to assign to innerHTML.
++const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
++const inline = s => esc(s)
++  .replace(/`([^`]+)`/g, '<code>$1</code>')
++  .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
++  .replace(/\*([^*]+)\*/g, '<i>$1</i>')
++  .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
++function md(src) {
++  const out = []; let list = false, code = false;
++  const close = () => { if (list) { out.push('</ul>'); list = false; } };
++  src.split('\n').forEach((ln, i) => {
++    let m;
++    if (/^```/.test(ln)) { close(); out.push(code ? '</pre>' : '<pre>'); code = !code; return; }
++    if (code) { out.push(esc(ln) + '\n'); return; }
++    if (m = ln.match(/^(#{1,3})\s+(.*)/)) { close(); out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`); }
++    else if (m = ln.match(/^\s*[-*]\s+(?:\[([ xX])\]\s+)?(.*)/)) {
++      if (!list) { out.push('<ul>'); list = true; }
++      const box = m[1] === undefined ? '' : `<input type="checkbox" data-l="${i}"${m[1] === ' ' ? '' : ' checked'}> `;
++      out.push(`<li>${box}${inline(m[2])}</li>`);
++    }
++    else if (m = ln.match(/^>\s?(.*)/)) { close(); out.push(`<blockquote>${inline(m[1])}</blockquote>`); }
++    else if (!ln.trim()) close();
++    else { close(); out.push(`<p>${inline(ln)}</p>`); }
++  });
++  if (code) out.push('</pre>'); close();
++  return out.join('');
++}
++$('preview').addEventListener('change', e => {
++  const l = e.target.dataset.l, n = get(cur); if (l === undefined || !n) return;
++  const lines = n.body.split('\n');
++  lines[l] = lines[l].replace(/\[[ xX]\]/, e.target.checked ? '[x]' : '[ ]');
++  n.body = lines.join('\n'); $('body').value = n.body; touch();
++});
++
++// Import / export
++$('export').onclick = () => {
++  const a = document.createElement('a');
++  a.href = URL.createObjectURL(new Blob([JSON.stringify(notes, null, 2)], { type: 'application/json' }));
++  a.download = 'notes-' + new Date().toISOString().slice(0, 10) + '.json';
++  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
++};
++$('import').onclick = () => $('file').click();
++$('file').onchange = async e => {
++  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
++  try {
++    let a = JSON.parse(await f.text()); if (a && a.notes) a = a.notes;
++    if (!Array.isArray(a)) throw 0;
++    const ok = a.filter(valid); let added = 0;
++    ok.forEach(n => {
++      const o = get(n.id);
++      if (!o) { notes.push({ pinned: false, created: n.updated, ...n }); added++; }
++      else if (n.updated > o.updated) Object.assign(o, n);
++    });
++    save(); renderEditor(); renderList();
++    toast(`Imported ${ok.length} note${ok.length === 1 ? '' : 's'} (${added} new).`);
++  } catch { toast('That file is not a valid notes export.'); }
++};
++
++// Wiring
++$('new').onclick = $('new2').onclick = create;
++$('del').onclick = remove;
++$('back').onclick = () => { dropIfEmpty(); cur = null; renderEditor(); renderList(); };
++$('pin').onclick = () => { const n = get(cur); n.pinned = !n.pinned; $('pin').classList.toggle('on', n.pinned); touch(); };
++$('mode').onclick = () => { preview = !preview; renderEditor(); if (!preview) $('body').focus(); };
++$('q').oninput = e => { query = e.target.value; renderList(); };
++$('title').oninput = e => { get(cur).title = e.target.value; touch(); };
++$('body').oninput = e => { get(cur).body = e.target.value; touch(); };
++$('tagIn').oninput = e => {
++  get(cur).tags = [...new Set(e.target.value.split(',').map(t => t.trim().replace(/^#/, '').toLowerCase()).filter(Boolean))];
++  touch();
++};
++$('tagIn').onblur = renderEditor;
++document.addEventListener('keydown', e => {
++  if (!(e.ctrlKey || e.metaKey)) return;
++  const k = e.key.toLowerCase();
++  if (k === 'n') { e.preventDefault(); create(); }
++  else if (k === 'k') { e.preventDefault(); $('q').focus(); $('q').select(); }
++  else if (k === 'e' && cur) { e.preventDefault(); $('mode').click(); }
++});
++// Keep multiple tabs in sync; flush pending save when leaving.
++addEventListener('storage', e => {
++  if (e.key !== KEY) return;
++  notes = load(); if (cur && !get(cur)) cur = null;
++  renderList(); if (document.activeElement.tagName !== 'TEXTAREA') renderEditor();
++});
++addEventListener('beforeunload', () => { if (saveT) save(); });
++
++renderList(); renderEditor();
+diff --git a/notes/index.html b/notes/index.html
+new file mode 100644
+index 0000000..ce31cb3
+--- /dev/null
++++ b/notes/index.html
+@@ -0,0 +1,49 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<title>Notes</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<div id="app">
++  <aside id="side">
++    <div class="row">
++      <input id="q" type="search" placeholder="Search  (Ctrl/⌘+K)" aria-label="Search notes">
++      <button id="new" title="New note (Ctrl/⌘+N)">＋ New</button>
++    </div>
++    <div id="tags"></div>
++    <ul id="list"></ul>
++    <div class="row foot">
++      <span id="count"></span>
++      <button id="export" title="Download all notes as JSON">Export</button>
++      <button id="import" title="Import notes from a JSON export">Import</button>
++      <input id="file" type="file" accept="application/json,.json" hidden>
++    </div>
++  </aside>
++  <main id="main">
++    <div id="empty">
++      <p>No note selected.</p>
++      <button id="new2">Create a note</button>
++    </div>
++    <section id="editor" hidden>
++      <div class="row bar">
++        <button id="back" title="Back to list">←</button>
++        <span id="status"></span>
++        <button id="pin" title="Pin to top">📌 Pin</button>
++        <button id="mode" title="Toggle preview (Ctrl/⌘+E)">Preview</button>
++        <button id="del" title="Delete note">Delete</button>
++      </div>
++      <input id="title" placeholder="Title" aria-label="Title">
++      <input id="tagIn" placeholder="Tags, comma separated" aria-label="Tags">
++      <textarea id="body" placeholder="Write here… Markdown: # headings, **bold**, *italic*, `code`, - lists, - [ ] tasks, > quotes, [links](https://…)" aria-label="Note body"></textarea>
++      <div id="preview" hidden></div>
++      <div id="meta"></div>
++    </section>
++  </main>
++</div>
++<div id="toast" role="status" hidden><span id="toastMsg"></span> <button id="undo" hidden>Undo</button></div>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/notes/style.css b/notes/style.css
+new file mode 100644
+index 0000000..0a4157f
+--- /dev/null
++++ b/notes/style.css
+@@ -0,0 +1,49 @@
++:root{--bg:#fff;--panel:#f6f6f7;--fg:#1d1d1f;--mute:#6e6e73;--line:#e2e2e5;--acc:#2f6fed;--sel:#e4ecfd}
++@media(prefers-color-scheme:dark){:root{--bg:#1b1b1e;--panel:#232327;--fg:#ececee;--mute:#9a9aa2;--line:#35353b;--acc:#6b9bff;--sel:#2b3a5c}}
++*{box-sizing:border-box}
++html,body{height:100%;margin:0}
++body{font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg)}
++button,input,textarea{font:inherit;color:inherit}
++button{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer}
++button:hover{border-color:var(--acc)}
++:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
++#app{display:flex;height:100%}
++#side{width:320px;flex:none;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
++.row{display:flex;gap:6px;padding:10px;align-items:center}
++#q{flex:1;min-width:0;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
++#tags{display:flex;flex-wrap:wrap;gap:4px;padding:0 10px}
++#tags button{padding:1px 8px;border-radius:99px;font-size:12px}
++#tags button.on,#pin.on,#mode.on{background:var(--acc);color:#fff;border-color:var(--acc)}
++#list{list-style:none;margin:8px 0 0;padding:0;flex:1;overflow:auto}
++#list button{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);border-radius:0;background:none;padding:10px 14px}
++#list li.sel button{background:var(--sel)}
++#list b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++#list small{display:block;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++#list .none{padding:20px;color:var(--mute);text-align:center}
++.foot{border-top:1px solid var(--line);font-size:12px;color:var(--mute)}
++#count{flex:1}
++#main{flex:1;min-width:0;display:flex;flex-direction:column}
++#empty{margin:auto;text-align:center;color:var(--mute)}
++#editor{display:flex;flex-direction:column;flex:1;min-height:0;max-width:820px;width:100%;margin:0 auto;padding:0 16px}
++#editor[hidden],#empty[hidden],[hidden]{display:none!important}
++.bar{padding:12px 0}
++#status{flex:1;color:var(--mute);font-size:12px}
++#back{display:none}
++#title{border:0;background:none;font-size:26px;font-weight:700;padding:6px 0;outline:0}
++#tagIn{border:0;border-bottom:1px solid var(--line);background:none;padding:4px 0 8px;color:var(--mute);outline:0}
++#body{flex:1;min-height:0;resize:none;border:0;background:none;padding:14px 0;outline:0;line-height:1.6}
++#preview{flex:1;overflow:auto;padding:10px 0}
++#preview pre,#preview code{background:var(--panel);border-radius:4px}
++#preview code{padding:1px 4px}#preview pre{padding:10px;overflow:auto}
++#preview blockquote{margin:0;padding-left:12px;border-left:3px solid var(--line);color:var(--mute)}
++#preview a{color:var(--acc)}
++#preview ul{padding-left:22px}#preview li:has(>input){list-style:none;margin-left:-20px}
++#meta{padding:6px 0 10px;font-size:12px;color:var(--mute)}
++#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;box-shadow:0 4px 16px #0004}
++@media(max-width:700px){
++  #side{width:100%;border:0}
++  #main{display:none}
++  #app.editing #side{display:none}
++  #app.editing #main{display:flex}
++  #back{display:inline-block}
++}

@@ -1,0 +1,117 @@
+diff --git a/app/page.py b/app/page.py
+new file mode 100644
+index 0000000..878d91e
+--- /dev/null
++++ b/app/page.py
+@@ -0,0 +1,111 @@
++"""Render a standalone public service status page."""
++import html
++import json
++import re
++import sys
++from datetime import datetime, timezone
++
++
++STATE_LABELS = {
++    "operational": "Operational",
++    "degraded": "Degraded performance",
++    "outage": "Major outage",
++    "maintenance": "Under maintenance",
++}
++SEVERITY = {"outage": 0, "degraded": 1, "maintenance": 2, "operational": 3}
++
++
++CSS = """<style>
++:root { --bg: #f5f7fa; --text: #182230; --ok: #16803c; --warn: #a85a00; --down: #c62828; --maint: #526174; }
++@media (prefers-color-scheme: dark) { :root { --bg: #151a21; --text: #edf2f7; --ok: #56d77a; --warn: #ffc266; --down: #ff7777; --maint: #aab7c8; } }
++* { box-sizing: border-box; }
++body { margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
++header, main, footer { max-width: 640px; margin: 0 auto; }
++h1 { margin-top: 0; }
++.banner { padding: 1rem; border-radius: .5rem; background: #e7f5eb; color: var(--ok); }
++.banner--warn { background: #fff3df; color: var(--warn); }
++.banner--down { background: #fde8e8; color: var(--down); }
++.services { max-width: 640px; margin: 1.5rem auto; padding: 0; list-style: none; }
++.service { display: flex; align-items: center; gap: 1rem; margin-bottom: .75rem; padding: 1rem; border: 1px solid #d7dee7; border-radius: .5rem; }
++.dot { flex: 0 0 .75rem; width: .75rem; height: .75rem; border-radius: 50%; background: var(--maint); }
++[data-state="operational"] .dot { background: var(--ok); }
++[data-state="degraded"] .dot { background: var(--warn); }
++[data-state="outage"] .dot { background: var(--down); animation: pulse 1.5s ease-in-out infinite; }
++[data-state="maintenance"] .dot { background: var(--maint); }
++@keyframes pulse { 50% { opacity: .35; transform: scale(.8); } }
++@media (prefers-reduced-motion: reduce) { .dot { animation: none !important; } }
++.service h2 { margin: 0; font-size: 1.1rem; }
++.service p { margin: .35rem 0 0; }
++.state, .uptime { color: var(--text); }
++.note { opacity: .8; }
++a { color: inherit; }
++a:focus-visible { outline: 3px solid #2878d0; outline-offset: 3px; }
++.empty { max-width: 640px; margin: 2rem auto; }
++footer { margin-top: 2rem; font-size: .9rem; opacity: .75; }
++@media (max-width: 480px) { .service { flex-direction: column; align-items: flex-start; } }
++</style>"""
++
++
++def _escape(value):
++    return html.escape(str(value), quote=True)
++
++
++def _slug(name):
++    slug = "".join(char if char.isalnum() else "-" for char in name.lower())
++    return re.sub(r"-+", "-", slug).strip("-")
++
++
++def render(services: list[dict], generated_at: str) -> str:
++    for service in services:
++        state = service["state"]
++        if state not in STATE_LABELS:
++            raise ValueError(f"unknown state: {state}")
++
++    total = len(services)
++    operational = sum(service["state"] == "operational" for service in services)
++    title = f"Status · {operational} of {total} operational" if total else "Status · no services"
++    head = f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{_escape(title)}</title>\n{CSS}\n</head>\n<body>\n<header>\n<h1>System status</h1>\n</header>\n"
++    body = ""
++    if total:
++        attention = sum(service["state"] in ("degraded", "outage") for service in services)
++        maintenance = sum(service["state"] == "maintenance" for service in services)
++        if attention:
++            message = f"{attention} of {total} service{'s' if attention != 1 else ''} {'need' if attention != 1 else 'needs'} attention"
++        else:
++            message = "All systems operational"
++        if maintenance:
++            message += f" · {maintenance} under maintenance"
++        modifier = "banner--down" if any(s["state"] == "outage" for s in services) else "banner--warn" if any(s["state"] == "degraded" for s in services) else "banner--ok"
++        body += f'<div class="banner {modifier}" role="status">{_escape(message)}</div>\n<main>\n<ul class="services">\n'
++        ordered = sorted(services, key=lambda s: (SEVERITY[s["state"]], s["name"].casefold()))
++        for service in ordered:
++            name = _escape(service["name"])
++            state = service["state"]
++            link = ""
++            if "url" in service:
++                url = _escape(service["url"])
++                rel = ' rel="noopener"' if re.match(r"^https?://", str(service["url"]), re.I) else ""
++                name = f'<a href="{url}"{rel}>{name}</a>'
++            body += f'<li class="service" id="service-{_escape(_slug(str(service["name"]))) }" data-state="{_escape(state)}"><span class="dot" aria-hidden="true"></span><div><h2>{name}</h2><span class="state">{STATE_LABELS[state]}</span>'
++            if service.get("note"):
++                body += f'<p class="note">{_escape(service["note"])}</p>'
++            if "uptime" in service and service["uptime"] is not None:
++                body += f'<p><span class="uptime">{float(service["uptime"]):.2f}% uptime</span></p>'
++            body += '</div></li>\n'
++        body += '</ul>\n</main>\n'
++    else:
++        body = '<main>\n<p class="empty">No services configured.</p>\n</main>\n'
++    timestamp = _escape(generated_at)
++    return head + body + f'<footer><time datetime="{timestamp}">Updated {timestamp}</time></footer>\n</body>\n</html>\n'
++
++
++def main():
++    if len(sys.argv) != 2:
++        raise SystemExit("usage: python -m app.page services.json")
++    with open(sys.argv[1], encoding="utf-8") as handle:
++        services = json.load(handle)
++    print(render(services, datetime.now(timezone.utc).isoformat()), end="")
++
++
++if __name__ == "__main__":
++    main()

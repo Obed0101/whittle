@@ -1,0 +1,31 @@
+{
+  "task": "expense-report",
+  "arm": "whittle",
+  "run": "004",
+  "checks": 32,
+  "passed": 27,
+  "missed": [
+    "test_r13_by_month_oldest_first",
+    "test_r14_grouped_output_ends_with_total",
+    "test_r15_grouped_count_column",
+    "test_r30_group_names_title_cased_in_table_only",
+    "test_r31_help_lists_every_flag_and_an_example"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 158,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 25.0,
+    "tokens": {
+      "input": 12466,
+      "output": 2304,
+      "cacheRead": 8192,
+      "cost": 0.002481
+    },
+    "turns": 6,
+    "tool_calls": 6
+  }
+}

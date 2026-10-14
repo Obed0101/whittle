@@ -1,0 +1,47 @@
+{
+  "task": "report-over-time",
+  "arm": "whittle",
+  "run": "010",
+  "checks": 40,
+  "passed": 19,
+  "missed": [
+    "test_r01_table_header_columns_in_order",
+    "test_r02_dashes_under_header",
+    "test_r03_sorted_by_date_keeping_file_order_on_ties",
+    "test_r04_amounts_two_decimals_thousands_right_aligned",
+    "test_r05_long_note_cut_to_23_chars_and_ellipsis",
+    "test_r06_total_line",
+    "test_r08_category_filter_ignores_case_and_repeats",
+    "test_r09_from_is_inclusive",
+    "test_r10_to_is_inclusive",
+    "test_r11_min_amount_is_inclusive",
+    "test_r16_json_rows",
+    "test_r18_json_two_space_indent_and_final_newline",
+    "test_r21_currency_symbol_only_in_table",
+    "test_r26_invalid_amount_rows_skipped_with_plural_warning",
+    "test_r27_top_n_largest_first",
+    "test_r28_refunds_in_parentheses_still_subtract",
+    "test_r29_no_header",
+    "test_r30_group_names_title_cased_in_table_only",
+    "test_r33_exclude_ignores_case",
+    "test_r34_exclude_repeats",
+    "test_r35_exclude_changes_the_total"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 171,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 100.3,
+    "tokens": {
+      "input": 55010,
+      "output": 7208,
+      "cacheRead": 62464,
+      "cost": 0.00973
+    },
+    "turns": 27,
+    "tool_calls": 28
+  }
+}

@@ -1,0 +1,930 @@
+diff --git a/board/app.js b/board/app.js
+new file mode 100644
+index 0000000..37038f7
+--- /dev/null
++++ b/board/app.js
+@@ -0,0 +1,668 @@
++(() => {
++'use strict';
++
++const KEY = 'kanban.v1';
++const COLORS = ['#e5484d', '#f76b15', '#c99a06', '#30a46c', '#0091ff', '#8e4ec6', '#6e56cf', '#889096'];
++const PRIORITY_LABEL = { low: 'Low', medium: 'Medium', high: 'High' };
++
++const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
++const $ = (id) => document.getElementById(id);
++
++function h(tag, props, ...kids) {
++  const el = document.createElement(tag);
++  for (const [k, v] of Object.entries(props || {})) {
++    if (v == null || v === false) continue;
++    if (k === 'class') el.className = v;
++    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
++    else if (k in el) el[k] = v;
++    else el.setAttribute(k, v);
++  }
++  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
++  return el;
++}
++
++/* ---------- data ---------- */
++
++const newColumn = (name, o = {}) => ({ id: uid(), name, wip: 0, done: false, cards: [], ...o });
++const newBoard = (name) => ({
++  id: uid(), name,
++  labels: [
++    { id: uid(), name: 'Work', color: COLORS[4] },
++    { id: uid(), name: 'Personal', color: COLORS[3] },
++    { id: uid(), name: 'Urgent', color: COLORS[0] },
++  ],
++  columns: [newColumn('To do'), newColumn('In progress', { wip: 3 }), newColumn('Done', { done: true })],
++  archive: [],
++});
++
++function normCard(c) {
++  const now = Date.now();
++  return {
++    id: String(c.id || uid()),
++    title: String(c.title || 'Untitled').slice(0, 300),
++    desc: String(c.desc || ''),
++    labels: Array.isArray(c.labels) ? c.labels.map(String) : [],
++    priority: ['low', 'medium', 'high'].includes(c.priority) ? c.priority : 'none',
++    due: /^\d{4}-\d{2}-\d{2}$/.test(c.due || '') ? c.due : '',
++    checklist: (Array.isArray(c.checklist) ? c.checklist : []).map((i) => ({
++      id: String(i.id || uid()), text: String(i.text || ''), done: !!i.done,
++    })),
++    created: Number(c.created) || now,
++    updated: Number(c.updated) || now,
++    from: c.from ? String(c.from) : undefined,
++  };
++}
++
++function normalize(raw) {
++  if (!raw || !Array.isArray(raw.boards) || !raw.boards.length) return null;
++  const boards = raw.boards.map((b) => ({
++    id: String(b.id || uid()),
++    name: String(b.name || 'Board'),
++    labels: (Array.isArray(b.labels) ? b.labels : []).map((l) => ({
++      id: String(l.id || uid()), name: String(l.name || ''), color: String(l.color || COLORS[7]),
++    })),
++    columns: (Array.isArray(b.columns) ? b.columns : []).map((c) => ({
++      id: String(c.id || uid()), name: String(c.name || 'Column'),
++      wip: Math.max(0, parseInt(c.wip, 10) || 0), done: !!c.done,
++      cards: (Array.isArray(c.cards) ? c.cards : []).map(normCard),
++    })),
++    archive: (Array.isArray(b.archive) ? b.archive : []).map(normCard),
++  }));
++  const active = boards.some((b) => b.id === raw.active) ? raw.active : boards[0].id;
++  return { boards, active };
++}
++
++let state;
++try { state = normalize(JSON.parse(localStorage.getItem(KEY))); } catch { state = null; }
++if (!state) { const b = newBoard('My board'); state = { boards: [b], active: b.id }; }
++
++let theme = null;
++try { theme = localStorage.getItem(KEY + '.theme'); } catch { /* ignore */ }
++
++const ui = { q: '', label: '', priority: '', adding: null };
++const undoStack = [];
++let storageWarned = false;
++
++function save() {
++  try { localStorage.setItem(KEY, JSON.stringify(state)); }
++  catch {
++    if (!storageWarned) { storageWarned = true; toast('Could not save to browser storage — export a backup.'); }
++  }
++}
++
++const board = () => state.boards.find((b) => b.id === state.active);
++const findCard = (id) => {
++  for (const col of board().columns) {
++    const card = col.cards.find((c) => c.id === id);
++    if (card) return { card, col };
++  }
++  return null;
++};
++
++/** Run a mutation with undo snapshot, persist and re-render. */
++function commit(fn, msg) {
++  undoStack.push(JSON.stringify(state));
++  if (undoStack.length > 60) undoStack.shift();
++  fn();
++  save();
++  render();
++  if (msg) toast(msg, true);
++}
++
++function undo() {
++  const snap = undoStack.pop();
++  if (!snap) return toast('Nothing to undo');
++  state = JSON.parse(snap);
++  save();
++  render();
++  toast('Undone');
++}
++
++/* ---------- helpers ---------- */
++
++let toastTimer;
++function toast(msg, withUndo) {
++  const t = $('toast');
++  t.replaceChildren(h('span', {}, msg));
++  if (withUndo) t.append(h('button', { onclick: () => { undo(); } }, 'Undo'));
++  t.hidden = false;
++  clearTimeout(toastTimer);
++  toastTimer = setTimeout(() => { t.hidden = true; }, withUndo ? 6000 : 2500);
++}
++
++const todayStr = () => {
++  const d = new Date();
++  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
++};
++const fmtDue = (s) => {
++  const [y, m, d] = s.split('-').map(Number);
++  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: y === new Date().getFullYear() ? undefined : 'numeric' });
++};
++
++function askText(title, value = '') {
++  return new Promise((resolve) => {
++    const dlg = $('textDialog');
++    $('textTitle').textContent = title;
++    $('textInput').value = value;
++    let result = null;
++    const done = () => { dlg.removeEventListener('close', done); resolve(result); };
++    dlg.addEventListener('close', done);
++    $('textForm').onsubmit = (e) => { e.preventDefault(); result = $('textInput').value.trim() || null; dlg.close(); };
++    $('textCancel').onclick = () => dlg.close();
++    dlg.showModal();
++    $('textInput').select();
++  });
++}
++
++function backdropClose(dlg) {
++  dlg.addEventListener('mousedown', (e) => { if (e.target === dlg) dlg.close(); });
++}
++
++/* ---------- rendering ---------- */
++
++function visible(card) {
++  if (ui.label && !card.labels.includes(ui.label)) return false;
++  if (ui.priority && card.priority !== ui.priority) return false;
++  if (ui.q) {
++    const hay = (card.title + '\n' + card.desc + '\n' + card.checklist.map((i) => i.text).join('\n')).toLowerCase();
++    if (!hay.includes(ui.q.toLowerCase())) return false;
++  }
++  return true;
++}
++const filtering = () => !!(ui.q || ui.label || ui.priority);
++
++function renderToolbar() {
++  const sel = $('boardSelect');
++  sel.replaceChildren(...state.boards.map((b) => h('option', { value: b.id, selected: b.id === state.active }, b.name)));
++  const lf = $('labelFilter');
++  lf.replaceChildren(
++    h('option', { value: '' }, 'All labels'),
++    ...board().labels.map((l) => h('option', { value: l.id, selected: l.id === ui.label }, l.name)),
++  );
++  if (!board().labels.some((l) => l.id === ui.label)) ui.label = '';
++  $('boardDelete').disabled = state.boards.length < 2;
++  $('undoBtn').disabled = !undoStack.length;
++  $('archiveBtn').textContent = board().archive.length ? `Archive (${board().archive.length})` : 'Archive';
++}
++
++function cardEl(card, col, b) {
++  const labels = card.labels.map((id) => b.labels.find((l) => l.id === id)).filter(Boolean);
++  const meta = [];
++  if (card.priority !== 'none') meta.push(h('span', { class: 'badge' }, PRIORITY_LABEL[card.priority]));
++  if (card.due) {
++    const cls = col.done ? '' : card.due < todayStr() ? ' overdue' : card.due === todayStr() ? ' today' : '';
++    meta.push(h('span', { class: 'badge' + cls, title: 'Due date' }, '📅 ' + fmtDue(card.due)));
++  }
++  if (card.checklist.length) {
++    const n = card.checklist.filter((i) => i.done).length;
++    meta.push(h('span', { class: 'badge' + (n === card.checklist.length ? ' complete' : '') }, `☑ ${n}/${card.checklist.length}`));
++  }
++  if (card.desc) meta.push(h('span', { title: 'Has description' }, '≡'));
++
++  const el = h('div', {
++    class: `card p-${card.priority}${col.done ? ' done' : ''}`,
++    draggable: true, tabIndex: 0, role: 'button', 'data-id': card.id,
++    onclick: () => openCard(card.id),
++    onkeydown: (e) => { if (e.key === 'Enter' && e.target === el) openCard(card.id); },
++    ondragstart: (e) => {
++      e.dataTransfer.setData('text/plain', card.id);
++      e.dataTransfer.effectAllowed = 'move';
++      drag.id = card.id;
++      setTimeout(() => el.classList.add('dragging'), 0);
++    },
++    ondragend: () => { drag.id = null; clearDropUI(); el.classList.remove('dragging'); },
++  },
++  labels.length ? h('div', { class: 'chips' }, labels.map((l) => h('span', { class: 'chip', style: `background:${l.color}` }, l.name))) : null,
++  h('div', { class: 'title' }, card.title),
++  meta.length ? h('div', { class: 'meta' }, meta) : null);
++  return el;
++}
++
++const drag = { id: null };
++let dropLine = null;
++function clearDropUI() {
++  if (dropLine) { dropLine.remove(); dropLine = null; }
++  document.querySelectorAll('.column.over').forEach((c) => c.classList.remove('over'));
++}
++
++function columnEl(col, idx) {
++  const b = board();
++  const shown = col.cards.filter(visible);
++  const full = col.wip > 0 && col.cards.length > col.wip;
++  const cardsEl = h('div', { class: 'cards' }, shown.map((c) => cardEl(c, col, b)));
++  cardsEl.dataset.col = col.id;
++
++  const colEl = h('section', { class: 'column', 'data-col': col.id },
++    h('div', { class: 'col-head' },
++      h('h3', {}, col.name),
++      h('span', { class: 'count' + (full ? ' full' : ''), title: col.wip ? 'WIP limit' : 'Cards' },
++        col.wip ? `${col.cards.length}/${col.wip}` : String(col.cards.length)),
++      h('button', { class: 'menu', title: 'Column settings', 'aria-label': 'Column settings', onclick: () => openColumn(col.id) }, '⋯')),
++    cardsEl,
++    addCardEl(col));
++
++  colEl.addEventListener('dragover', (e) => {
++    if (!drag.id) return;
++    e.preventDefault();
++    e.dataTransfer.dropEffect = 'move';
++    document.querySelectorAll('.column.over').forEach((c) => { if (c !== colEl) c.classList.remove('over'); });
++    colEl.classList.add('over');
++    const { before } = dropTarget(cardsEl, e.clientY);
++    if (!dropLine) dropLine = h('div', { class: 'drop-line' });
++    cardsEl.insertBefore(dropLine, before);
++  });
++  colEl.addEventListener('dragleave', (e) => {
++    if (!colEl.contains(e.relatedTarget)) { colEl.classList.remove('over'); if (dropLine) dropLine.remove(); }
++  });
++  colEl.addEventListener('drop', (e) => {
++    if (!drag.id) return;
++    e.preventDefault();
++    const id = drag.id;
++    const { before } = dropTarget(cardsEl, e.clientY);
++    const beforeId = before ? before.dataset.id : null;
++    drag.id = null;
++    clearDropUI();
++    moveCard(id, col.id, beforeId);
++  });
++  return colEl;
++}
++
++function dropTarget(cardsEl, y) {
++  const els = [...cardsEl.querySelectorAll('.card:not(.dragging)')];
++  for (const el of els) {
++    const r = el.getBoundingClientRect();
++    if (y < r.top + r.height / 2) return { before: el };
++  }
++  return { before: null };
++}
++
++function moveCard(id, toColId, beforeId) {
++  const found = findCard(id);
++  const to = board().columns.find((c) => c.id === toColId);
++  if (!found || !to) return;
++  if (beforeId === id) return;
++  commit(() => {
++    const { card, col } = found;
++    col.cards.splice(col.cards.indexOf(card), 1);
++    let at = beforeId ? to.cards.findIndex((c) => c.id === beforeId) : -1;
++    if (at < 0) at = to.cards.length;
++    to.cards.splice(at, 0, card);
++    if (col !== to) card.updated = Date.now();
++  });
++}
++
++function addCardEl(col) {
++  if (ui.adding !== col.id) {
++    return h('div', { class: 'add-card' }, h('button', { onclick: () => { ui.adding = col.id; render(true); } }, '+ Add card'));
++  }
++  const ta = h('textarea', {
++    rows: 2, placeholder: 'Card title (one card per line)', maxLength: 3000,
++    onkeydown: (e) => {
++      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
++      else if (e.key === 'Escape') { e.stopPropagation(); ui.adding = null; render(); }
++    },
++  });
++  const submit = () => {
++    const lines = ta.value.split('\n').map((s) => s.trim()).filter(Boolean);
++    if (!lines.length) { ui.adding = null; render(); return; }
++    commit(() => {
++      for (const t of lines) col.cards.push(normCard({ title: t }));
++    });
++    ui.adding = col.id;
++    render(true);
++  };
++  return h('div', { class: 'add-card' }, ta,
++    h('div', { class: 'actions' },
++      h('button', { class: 'primary', onclick: submit }, 'Add'),
++      h('button', { onclick: () => { ui.adding = null; render(); } }, 'Cancel')));
++}
++
++function render(focusAdd) {
++  const boardEl = $('board');
++  const scrollLeft = boardEl.scrollLeft;
++  const tops = {};
++  boardEl.querySelectorAll('.cards').forEach((c) => { tops[c.dataset.col] = c.scrollTop; });
++
++  renderToolbar();
++  const b = board();
++  const kids = b.columns.map((c, i) => columnEl(c, i));
++  kids.push(h('div', { class: 'add-col' }, h('button', { onclick: addColumn }, '+ Add column')));
++  boardEl.replaceChildren(...kids);
++
++  boardEl.scrollLeft = scrollLeft;
++  boardEl.querySelectorAll('.cards').forEach((c) => { if (tops[c.dataset.col]) c.scrollTop = tops[c.dataset.col]; });
++  if (filtering() && !b.columns.some((c) => c.cards.some(visible))) {
++    toastOnce('No cards match the current filters');
++  }
++  if (focusAdd) {
++    const ta = boardEl.querySelector('.add-card textarea');
++    if (ta) { ta.focus(); ta.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
++  }
++  document.title = `${b.name} · Kanban`;
++}
++let lastNoMatch = 0;
++function toastOnce(msg) { if (Date.now() - lastNoMatch > 3000) { lastNoMatch = Date.now(); toast(msg); } }
++
++/* ---------- columns ---------- */
++
++async function addColumn() {
++  const name = await askText('New column name');
++  if (!name) return;
++  commit(() => board().columns.push(newColumn(name)));
++}
++
++let editingCol = null;
++function openColumn(id) {
++  const b = board();
++  const i = b.columns.findIndex((c) => c.id === id);
++  if (i < 0) return;
++  editingCol = id;
++  const col = b.columns[i];
++  $('colName').value = col.name;
++  $('colWip').value = col.wip;
++  $('colDone').checked = col.done;
++  $('colLeft').disabled = i === 0;
++  $('colRight').disabled = i === b.columns.length - 1;
++  $('colArchiveAll').disabled = !col.cards.length;
++  $('columnDialog').showModal();
++}
++
++function wireColumnDialog() {
++  const dlg = $('columnDialog');
++  const cur = () => board().columns.find((c) => c.id === editingCol);
++  $('columnForm').onsubmit = (e) => {
++    e.preventDefault();
++    const col = cur();
++    if (!col) return dlg.close();
++    const name = $('colName').value.trim();
++    if (!name) return;
++    commit(() => {
++      col.name = name;
++      col.wip = Math.max(0, parseInt($('colWip').value, 10) || 0);
++      col.done = $('colDone').checked;
++    });
++    dlg.close();
++  };
++  $('colCancel').onclick = () => dlg.close();
++  const shift = (d) => {
++    const cols = board().columns;
++    const i = cols.findIndex((c) => c.id === editingCol);
++    const j = i + d;
++    if (i < 0 || j < 0 || j >= cols.length) return;
++    commit(() => { [cols[i], cols[j]] = [cols[j], cols[i]]; });
++    openColumn(editingCol);
++  };
++  $('colLeft').onclick = () => shift(-1);
++  $('colRight').onclick = () => shift(1);
++  $('colArchiveAll').onclick = () => {
++    const col = cur();
++    if (!col) return;
++    const n = col.cards.length;
++    commit(() => {
++      for (const c of col.cards) board().archive.push({ ...c, from: col.id, updated: Date.now() });
++      col.cards = [];
++    }, `Archived ${n} card${n === 1 ? '' : 's'}`);
++    dlg.close();
++  };
++  $('colDelete').onclick = () => {
++    const b = board();
++    const col = cur();
++    if (!col) return;
++    if (b.columns.length < 2) { toast('A board needs at least one column'); return; }
++    commit(() => {
++      for (const c of col.cards) b.archive.push({ ...c, from: col.id, updated: Date.now() });
++      b.columns.splice(b.columns.indexOf(col), 1);
++    }, col.cards.length ? `Column deleted; ${col.cards.length} card(s) moved to archive` : 'Column deleted');
++    dlg.close();
++  };
++  backdropClose(dlg);
++}
++
++/* ---------- card dialog ---------- */
++
++let editing = null; // { id, checklist, labels }
++function openCard(id) {
++  const f = findCard(id);
++  if (!f) return;
++  const { card, col } = f;
++  const b = board();
++  editing = { id, checklist: card.checklist.map((i) => ({ ...i })), labels: new Set(card.labels) };
++  $('cTitle').value = card.title;
++  $('cDesc').value = card.desc;
++  $('cPriority').value = card.priority;
++  $('cDue').value = card.due;
++  $('cColumn').replaceChildren(...b.columns.map((c) => h('option', { value: c.id, selected: c.id === col.id }, c.name)));
++  $('cLabels').replaceChildren(...(b.labels.length ? b.labels.map((l) => h('label', { class: 'label-pick', style: `background:${l.color}` },
++    h('input', { type: 'checkbox', checked: editing.labels.has(l.id), onchange: (e) => { e.target.checked ? editing.labels.add(l.id) : editing.labels.delete(l.id); } }),
++    l.name)) : [h('span', { class: 'muted' }, 'No labels yet — create some via the Labels button.')]));
++  renderChecklist();
++  $('cCheckNew').value = '';
++  $('cMeta').textContent = `Created ${new Date(card.created).toLocaleString()} · Updated ${new Date(card.updated).toLocaleString()}`;
++  $('cardDialog').showModal();
++  $('cTitle').focus();
++}
++
++function renderChecklist() {
++  $('cChecklist').replaceChildren(...editing.checklist.map((item) => h('div', { class: 'check-row' },
++    h('input', { type: 'checkbox', checked: item.done, onchange: (e) => { item.done = e.target.checked; renderChecklist(); } }),
++    h('input', { type: 'text', value: item.text, class: item.done ? 'done' : '', oninput: (e) => { item.text = e.target.value; } }),
++    h('button', { type: 'button', 'aria-label': 'Remove item', onclick: () => { editing.checklist = editing.checklist.filter((i) => i !== item); renderChecklist(); } }, '✕'))));
++}
++
++function wireCardDialog() {
++  const dlg = $('cardDialog');
++  $('cCheckNew').addEventListener('keydown', (e) => {
++    if (e.key !== 'Enter') return;
++    e.preventDefault();
++    const text = e.target.value.trim();
++    if (!text) return;
++    editing.checklist.push({ id: uid(), text, done: false });
++    e.target.value = '';
++    renderChecklist();
++  });
++  $('cardForm').onsubmit = (e) => {
++    e.preventDefault();
++    const f = findCard(editing.id);
++    if (!f) return dlg.close();
++    const title = $('cTitle').value.trim();
++    if (!title) return;
++    const pending = $('cCheckNew').value.trim();
++    if (pending) editing.checklist.push({ id: uid(), text: pending, done: false });
++    const toId = $('cColumn').value;
++    commit(() => {
++      const { card, col } = f;
++      card.title = title;
++      card.desc = $('cDesc').value;
++      card.priority = $('cPriority').value;
++      card.due = $('cDue').value;
++      card.labels = [...editing.labels];
++      card.checklist = editing.checklist.filter((i) => i.text.trim());
++      card.updated = Date.now();
++      if (toId !== col.id) {
++        const to = board().columns.find((c) => c.id === toId);
++        if (to) { col.cards.splice(col.cards.indexOf(card), 1); to.cards.push(card); }
++      }
++    });
++    dlg.close();
++  };
++  $('cCancel').onclick = () => dlg.close();
++  $('cArchive').onclick = () => {
++    const f = findCard(editing.id);
++    if (!f) return;
++    commit(() => {
++      f.col.cards.splice(f.col.cards.indexOf(f.card), 1);
++      board().archive.push({ ...f.card, from: f.col.id, updated: Date.now() });
++    }, 'Card archived');
++    dlg.close();
++  };
++  $('cDelete').onclick = () => {
++    const f = findCard(editing.id);
++    if (!f) return;
++    commit(() => f.col.cards.splice(f.col.cards.indexOf(f.card), 1), 'Card deleted');
++    dlg.close();
++  };
++  backdropClose(dlg);
++}
++
++/* ---------- labels ---------- */
++
++function renderLabels() {
++  const b = board();
++  $('labelList').replaceChildren(...b.labels.map((l) => h('div', { class: 'list-row' },
++    h('input', { type: 'color', value: /^#[0-9a-f]{6}$/i.test(l.color) ? l.color : '#889096', onchange: (e) => { commit(() => { l.color = e.target.value; }); renderLabels(); } }),
++    h('input', { class: 'grow', value: l.name, maxLength: 30, onchange: (e) => { const v = e.target.value.trim(); if (v) commit(() => { l.name = v; }); renderLabels(); } }),
++    h('button', { class: 'danger', onclick: () => {
++      commit(() => {
++        b.labels = b.labels.filter((x) => x !== l);
++        for (const c of [...b.columns.flatMap((x) => x.cards), ...b.archive]) c.labels = c.labels.filter((id) => id !== l.id);
++      });
++      renderLabels();
++    } }, 'Delete'))));
++  if (!b.labels.length) $('labelList').append(h('p', { class: 'muted' }, 'No labels yet.'));
++}
++
++function wireLabels() {
++  $('labelsBtn').onclick = () => { renderLabels(); $('labelsDialog').showModal(); };
++  $('labelsClose').onclick = () => $('labelsDialog').close();
++  $('labelForm').onsubmit = (e) => {
++    e.preventDefault();
++    const name = $('labelName').value.trim();
++    if (!name) return;
++    commit(() => board().labels.push({ id: uid(), name, color: $('labelColor').value }));
++    $('labelName').value = '';
++    renderLabels();
++  };
++  backdropClose($('labelsDialog'));
++}
++
++/* ---------- archive ---------- */
++
++function renderArchive() {
++  const b = board();
++  const list = $('archiveList');
++  if (!b.archive.length) { list.replaceChildren(h('p', { class: 'muted' }, 'Nothing archived.')); $('archiveClear').disabled = true; return; }
++  $('archiveClear').disabled = false;
++  list.replaceChildren(...[...b.archive].reverse().map((c) => h('div', { class: 'list-row' },
++    h('span', { class: 'grow' }, c.title),
++    h('button', { onclick: () => {
++      commit(() => {
++        b.archive.splice(b.archive.indexOf(c), 1);
++        const col = b.columns.find((x) => x.id === c.from) || b.columns[0];
++        delete c.from;
++        col.cards.push(c);
++      });
++      renderArchive();
++    } }, 'Restore'),
++    h('button', { class: 'danger', onclick: () => {
++      commit(() => { b.archive.splice(b.archive.indexOf(c), 1); });
++      renderArchive();
++    } }, 'Delete'))));
++}
++
++function wireArchive() {
++  $('archiveBtn').onclick = () => { renderArchive(); $('archiveDialog').showModal(); };
++  $('archiveClose').onclick = () => $('archiveDialog').close();
++  $('archiveClear').onclick = () => {
++    commit(() => { board().archive = []; }, 'Archive cleared');
++    renderArchive();
++  };
++  backdropClose($('archiveDialog'));
++}
++
++/* ---------- toolbar ---------- */
++
++function wireToolbar() {
++  $('boardSelect').onchange = (e) => { state.active = e.target.value; ui.label = ''; ui.adding = null; save(); render(); };
++  $('boardNew').onclick = async () => {
++    const name = await askText('New board name');
++    if (!name) return;
++    commit(() => { const b = newBoard(name); state.boards.push(b); state.active = b.id; });
++  };
++  $('boardRename').onclick = async () => {
++    const name = await askText('Rename board', board().name);
++    if (name) commit(() => { board().name = name; });
++  };
++  $('boardDelete').onclick = () => {
++    if (state.boards.length < 2) return;
++    if (!confirm(`Delete board "${board().name}" and all its cards?`)) return;
++    commit(() => {
++      state.boards = state.boards.filter((b) => b.id !== state.active);
++      state.active = state.boards[0].id;
++    }, 'Board deleted');
++  };
++  $('search').oninput = (e) => { ui.q = e.target.value.trim(); render(); };
++  $('labelFilter').onchange = (e) => { ui.label = e.target.value; render(); };
++  $('priorityFilter').onchange = (e) => { ui.priority = e.target.value; render(); };
++  $('undoBtn').onclick = undo;
++
++  $('exportBtn').onclick = () => {
++    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
++    const a = h('a', { href: URL.createObjectURL(blob), download: `kanban-backup-${todayStr()}.json` });
++    document.body.append(a);
++    a.click();
++    a.remove();
++    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
++  };
++  $('importBtn').onclick = () => $('importFile').click();
++  $('importFile').onchange = async (e) => {
++    const file = e.target.files[0];
++    e.target.value = '';
++    if (!file) return;
++    try {
++      const data = normalize(JSON.parse(await file.text()));
++      if (!data) throw new Error('bad');
++      if (!confirm('Replace all current boards with the imported file? (You can undo this.)')) return;
++      commit(() => { state = data; }, 'Imported');
++    } catch { toast('That file is not a valid kanban backup'); }
++  };
++
++  const applyTheme = () => {
++    if (theme) document.documentElement.dataset.theme = theme;
++    else delete document.documentElement.dataset.theme;
++  };
++  const systemDark = () => matchMedia('(prefers-color-scheme: dark)').matches;
++  $('themeBtn').onclick = () => {
++    const cur = theme || (systemDark() ? 'dark' : 'light');
++    theme = cur === 'dark' ? 'light' : 'dark';
++    try { localStorage.setItem(KEY + '.theme', theme); } catch { /* ignore */ }
++    applyTheme();
++  };
++  applyTheme();
++}
++
++function wireKeys() {
++  document.addEventListener('keydown', (e) => {
++    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
++    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
++      if (typing || document.querySelector('dialog[open]')) return; // keep native text undo
++      e.preventDefault();
++      undo();
++      return;
++    }
++    if (typing || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('dialog[open]')) return;
++    if (e.key === '/') { e.preventDefault(); $('search').focus(); }
++    else if (e.key === 'n') {
++      e.preventDefault();
++      const first = board().columns[0];
++      if (first) { ui.adding = first.id; render(true); }
++    }
++  });
++  // Sync across tabs.
++  window.addEventListener('storage', (e) => {
++    if (e.key !== KEY || !e.newValue) return;
++    try {
++      const s = normalize(JSON.parse(e.newValue));
++      if (s && !document.querySelector('dialog[open]')) { state = s; render(); }
++    } catch { /* ignore */ }
++  });
++}
++
++wireToolbar();
++wireCardDialog();
++wireColumnDialog();
++wireLabels();
++wireArchive();
++backdropClose($('textDialog'));
++wireKeys();
++render();
++})();
+diff --git a/board/index.html b/board/index.html
+new file mode 100644
+index 0000000..fb4bea6
+--- /dev/null
++++ b/board/index.html
+@@ -0,0 +1,125 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Kanban</title>
++<link rel="stylesheet" href="styles.css">
++</head>
++<body>
++<header class="topbar">
++  <div class="group">
++    <select id="boardSelect" aria-label="Board"></select>
++    <button id="boardNew" title="New board">+ Board</button>
++    <button id="boardRename" title="Rename board">Rename</button>
++    <button id="boardDelete" title="Delete board">Delete</button>
++  </div>
++  <div class="group grow">
++    <input id="search" type="search" placeholder="Search cards  ( / )" aria-label="Search cards">
++    <select id="labelFilter" aria-label="Filter by label"></select>
++    <select id="priorityFilter" aria-label="Filter by priority">
++      <option value="">Any priority</option>
++      <option value="high">High</option>
++      <option value="medium">Medium</option>
++      <option value="low">Low</option>
++    </select>
++  </div>
++  <div class="group">
++    <button id="undoBtn" title="Undo (Ctrl/Cmd+Z)">Undo</button>
++    <button id="labelsBtn">Labels</button>
++    <button id="archiveBtn">Archive</button>
++    <button id="exportBtn">Export</button>
++    <button id="importBtn">Import</button>
++    <button id="themeBtn" title="Toggle theme">Theme</button>
++    <input id="importFile" type="file" accept="application/json,.json" hidden>
++  </div>
++</header>
++
++<main id="board" class="board" aria-label="Board columns"></main>
++<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
++
++<dialog id="cardDialog">
++  <form id="cardForm" autocomplete="off">
++    <h2>Card</h2>
++    <label>Title <input id="cTitle" required maxlength="300"></label>
++    <label>Description <textarea id="cDesc" rows="5" placeholder="Notes, links, details…"></textarea></label>
++    <div class="row">
++      <label>Column <select id="cColumn"></select></label>
++      <label>Priority
++        <select id="cPriority">
++          <option value="none">None</option><option value="low">Low</option>
++          <option value="medium">Medium</option><option value="high">High</option>
++        </select>
++      </label>
++      <label>Due <input id="cDue" type="date"></label>
++    </div>
++    <fieldset><legend>Labels</legend><div id="cLabels" class="chips"></div></fieldset>
++    <fieldset><legend>Checklist</legend>
++      <div id="cChecklist"></div>
++      <input id="cCheckNew" placeholder="Add item and press Enter">
++    </fieldset>
++    <p id="cMeta" class="muted"></p>
++    <div class="actions">
++      <button type="button" id="cDelete" class="danger">Delete</button>
++      <button type="button" id="cArchive">Archive</button>
++      <span class="spacer"></span>
++      <button type="button" id="cCancel">Cancel</button>
++      <button type="submit" class="primary">Save</button>
++    </div>
++  </form>
++</dialog>
++
++<dialog id="columnDialog">
++  <form id="columnForm" autocomplete="off">
++    <h2>Column</h2>
++    <label>Name <input id="colName" required maxlength="80"></label>
++    <label>WIP limit (0 = none) <input id="colWip" type="number" min="0" max="999" value="0"></label>
++    <label class="check"><input id="colDone" type="checkbox"> Cards here count as done</label>
++    <div class="actions wrap">
++      <button type="button" id="colLeft">← Move left</button>
++      <button type="button" id="colRight">Move right →</button>
++      <button type="button" id="colArchiveAll">Archive all cards</button>
++      <button type="button" id="colDelete" class="danger">Delete column</button>
++    </div>
++    <div class="actions">
++      <span class="spacer"></span>
++      <button type="button" id="colCancel">Cancel</button>
++      <button type="submit" class="primary">Save</button>
++    </div>
++  </form>
++</dialog>
++
++<dialog id="labelsDialog">
++  <h2>Labels</h2>
++  <div id="labelList"></div>
++  <form id="labelForm" class="row" autocomplete="off">
++    <input id="labelName" placeholder="New label name" maxlength="30" required>
++    <input id="labelColor" type="color" value="#0091ff" aria-label="Color">
++    <button class="primary">Add</button>
++  </form>
++  <div class="actions"><span class="spacer"></span><button id="labelsClose">Close</button></div>
++</dialog>
++
++<dialog id="archiveDialog">
++  <h2>Archive</h2>
++  <div id="archiveList"></div>
++  <div class="actions">
++    <button id="archiveClear" class="danger">Delete all permanently</button>
++    <span class="spacer"></span><button id="archiveClose">Close</button>
++  </div>
++</dialog>
++
++<dialog id="textDialog">
++  <form id="textForm" autocomplete="off">
++    <h2 id="textTitle"></h2>
++    <input id="textInput" required maxlength="80">
++    <div class="actions"><span class="spacer"></span>
++      <button type="button" id="textCancel">Cancel</button>
++      <button class="primary">OK</button>
++    </div>
++  </form>
++</dialog>
++
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/board/styles.css b/board/styles.css
+new file mode 100644
+index 0000000..999a146
+--- /dev/null
++++ b/board/styles.css
+@@ -0,0 +1,119 @@
++:root {
++  --bg: #f4f5f7; --panel: #ebecf0; --card: #fff; --text: #172b4d; --muted: #6b778c;
++  --border: #d5d9e0; --accent: #2563eb; --danger: #d92d20; --warn: #b54708; --ok: #067647;
++  --shadow: 0 1px 2px rgba(9, 30, 66, .25);
++  color-scheme: light;
++}
++:root[data-theme="dark"] {
++  --bg: #14161a; --panel: #1e2127; --card: #2a2e36; --text: #e6e8ec; --muted: #9aa3b2;
++  --border: #3a3f49; --accent: #5b8cff; --danger: #ff6b61; --warn: #f5a524; --ok: #4ade80;
++  --shadow: 0 1px 2px rgba(0, 0, 0, .5);
++  color-scheme: dark;
++}
++* { box-sizing: border-box; }
++html, body { height: 100%; margin: 0; }
++body {
++  display: flex; flex-direction: column; background: var(--bg); color: var(--text);
++  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
++}
++button, input, select, textarea { font: inherit; color: inherit; }
++button {
++  background: var(--card); border: 1px solid var(--border); border-radius: 6px;
++  padding: 5px 10px; cursor: pointer;
++}
++button:hover { border-color: var(--accent); }
++button:disabled { opacity: .45; cursor: default; }
++button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
++button.danger { color: var(--danger); }
++input, select, textarea {
++  background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
++}
++:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
++.muted { color: var(--muted); font-size: 12px; }
++
++.topbar {
++  display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 8px 12px;
++  border-bottom: 1px solid var(--border); background: var(--panel);
++}
++.group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
++.group.grow { flex: 1; min-width: 240px; }
++.group.grow input[type=search] { flex: 1; min-width: 120px; }
++
++.board {
++  flex: 1; display: flex; gap: 12px; align-items: flex-start; padding: 12px;
++  overflow-x: auto; min-height: 0;
++}
++.column {
++  flex: 0 0 290px; display: flex; flex-direction: column; max-height: 100%;
++  background: var(--panel); border-radius: 10px; border: 1px solid var(--border);
++}
++.column.over { outline: 2px dashed var(--accent); }
++.col-head { display: flex; align-items: center; gap: 6px; padding: 10px 10px 6px; }
++.col-head h3 { flex: 1; margin: 0; font-size: 14px; overflow-wrap: anywhere; }
++.count { font-size: 12px; color: var(--muted); background: var(--card); border-radius: 10px; padding: 0 8px; }
++.count.full { color: #fff; background: var(--danger); }
++.col-head .menu { padding: 0 8px; border: none; background: transparent; font-size: 18px; line-height: 1.2; }
++.cards { flex: 1; overflow-y: auto; padding: 4px 8px; min-height: 24px; }
++.card {
++  background: var(--card); border-radius: 8px; box-shadow: var(--shadow); padding: 8px 10px;
++  margin-bottom: 8px; cursor: grab; border-left: 4px solid transparent; overflow-wrap: anywhere;
++}
++.card:hover { outline: 1px solid var(--accent); }
++.card.dragging { opacity: .4; }
++.card.p-low { border-left-color: #0091ff; }
++.card.p-medium { border-left-color: #f76b15; }
++.card.p-high { border-left-color: var(--danger); }
++.card.done .title { text-decoration: line-through; color: var(--muted); }
++.card .title { white-space: pre-wrap; }
++.card .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--muted); }
++.badge { border-radius: 4px; padding: 0 5px; background: var(--panel); }
++.badge.overdue { background: var(--danger); color: #fff; }
++.badge.today { background: var(--warn); color: #fff; }
++.badge.complete { color: var(--ok); }
++.chips { display: flex; flex-wrap: wrap; gap: 4px; }
++.chip { font-size: 11px; color: #fff; border-radius: 4px; padding: 0 6px; margin-top: 4px; text-shadow: 0 0 2px rgba(0,0,0,.4); }
++.drop-line { height: 3px; background: var(--accent); border-radius: 2px; margin: -4px 0 6px; }
++.add-card { padding: 8px; }
++.add-card > button { width: 100%; text-align: left; border: none; background: transparent; color: var(--muted); }
++.add-card textarea { width: 100%; resize: vertical; }
++.add-card .actions { margin-top: 6px; }
++.add-col { flex: 0 0 290px; }
++.add-col button { width: 100%; padding: 10px; border-style: dashed; background: transparent; }
++.empty { text-align: center; color: var(--muted); padding: 40px 20px; width: 100%; }
++
++dialog {
++  border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--text);
++  width: min(560px, 94vw); padding: 16px 18px; max-height: 92vh;
++}
++dialog::backdrop { background: rgba(0, 0, 0, .45); }
++dialog h2 { margin: 0 0 10px; font-size: 17px; }
++dialog label { display: block; margin-bottom: 10px; font-size: 12px; color: var(--muted); }
++dialog label input:not([type=checkbox]), dialog label textarea, dialog label select { display: block; width: 100%; margin-top: 3px; color: var(--text); }
++dialog label.check { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--text); }
++dialog #textInput { width: 100%; }
++fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 10px; }
++legend { font-size: 12px; color: var(--muted); }
++.row { display: flex; gap: 10px; align-items: flex-end; }
++.row > label { flex: 1; }
++.actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
++.actions.wrap { flex-wrap: wrap; }
++.spacer { flex: 1; }
++.label-pick { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: #fff !important; padding: 2px 8px; border-radius: 4px; margin: 0 !important; cursor: pointer; }
++.label-pick input { margin: 0; }
++.check-row { display: flex; gap: 6px; margin-bottom: 4px; align-items: center; }
++.check-row input[type=text] { flex: 1; }
++.check-row input.done { text-decoration: line-through; color: var(--muted); }
++.list-row { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
++.list-row .grow { flex: 1; overflow-wrap: anywhere; }
++
++.toast {
++  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
++  background: #1f2937; color: #fff; border-radius: 8px; padding: 8px 14px; display: flex; gap: 12px; z-index: 10;
++}
++.toast[hidden] { display: none; }
++.toast button { background: transparent; color: #8ab4ff; border: none; padding: 0; }
++
++@media (max-width: 600px) {
++  .column, .add-col { flex-basis: 85vw; }
++  .row { flex-direction: column; align-items: stretch; }
++}

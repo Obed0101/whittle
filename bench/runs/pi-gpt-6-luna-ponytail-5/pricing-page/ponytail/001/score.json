@@ -1,0 +1,27 @@
+{
+  "task": "pricing-page",
+  "arm": "ponytail",
+  "run": "001",
+  "checks": 26,
+  "passed": 25,
+  "missed": [
+    "test_b14_table_is_readable_by_screen_readers"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 45,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 34.4,
+    "tokens": {
+      "input": 8954,
+      "output": 4038,
+      "cacheRead": 13312,
+      "cost": 0.003048
+    },
+    "turns": 6,
+    "tool_calls": 7
+  }
+}
