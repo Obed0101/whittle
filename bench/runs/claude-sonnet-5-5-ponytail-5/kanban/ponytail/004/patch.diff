@@ -1,0 +1,477 @@
+diff --git a/board/app.js b/board/app.js
+new file mode 100644
+index 0000000..d15b739
+--- /dev/null
++++ b/board/app.js
+@@ -0,0 +1,333 @@
++(() => {
++'use strict';
++
++const KEY = 'kanban.v1';
++const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
++const $ = (id) => document.getElementById(id);
++
++function h(tag, props = {}, ...kids) {
++  const e = document.createElement(tag);
++  for (const [k, v] of Object.entries(props)) {
++    if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
++    else if (k === 'class') e.className = v;
++    else if (v === true) e.setAttribute(k, '');
++    else if (v !== false && v != null) e.setAttribute(k, v);
++  }
++  e.append(...kids.filter((k) => k != null && k !== false));
++  return e;
++}
++
++// ---- state -------------------------------------------------------------
++
++const defaultState = () => ({
++  columns: ['To do', 'Doing', 'Done'].map((title) => ({ id: uid(), title, cards: [] })),
++});
++
++// Returns a cleaned copy of s, or null if it is not a board.
++function sanitize(s) {
++  if (!s || !Array.isArray(s.columns)) return null;
++  const str = (v) => (typeof v === 'string' ? v : '');
++  const labels = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'];
++  return {
++    columns: s.columns.map((c) => ({
++      id: str(c && c.id) || uid(),
++      title: str(c && c.title) || 'Untitled',
++      cards: (Array.isArray(c && c.cards) ? c.cards : []).map((k) => ({
++        id: str(k && k.id) || uid(),
++        title: str(k && k.title) || 'Untitled',
++        notes: str(k && k.notes),
++        due: /^\d{4}-\d{2}-\d{2}$/.test(str(k && k.due)) ? k.due : '',
++        label: labels.includes(k && k.label) ? k.label : '',
++      })),
++    })),
++  };
++}
++
++function load() {
++  try {
++    const raw = localStorage.getItem(KEY);
++    if (raw) return sanitize(JSON.parse(raw)) || defaultState();
++  } catch (e) { /* corrupt or blocked storage: start fresh */ }
++  return defaultState();
++}
++
++let state = load();
++let query = '';
++let adding = null; // column id with the add-card form open
++let editingId = null;
++
++function save() {
++  try { localStorage.setItem(KEY, JSON.stringify(state)); }
++  catch (e) { toast('Could not save: browser storage is unavailable or full. Export a backup.'); }
++}
++
++// Apply a mutation, persist, re-render, and optionally offer undo.
++function change(fn, undoMsg) {
++  const before = JSON.stringify(state);
++  fn();
++  save();
++  render();
++  if (undoMsg) {
++    toast(undoMsg, () => { state = JSON.parse(before); save(); render(); });
++  }
++}
++
++const findCard = (id) => {
++  for (const col of state.columns) {
++    const i = col.cards.findIndex((c) => c.id === id);
++    if (i >= 0) return { col, i, card: col.cards[i] };
++  }
++  return null;
++};
++
++function moveCard(id, toColId, beforeId) {
++  if (id === beforeId) return;
++  change(() => {
++    const src = findCard(id);
++    const dst = state.columns.find((c) => c.id === toColId);
++    if (!src || !dst) return;
++    src.col.cards.splice(src.i, 1);
++    const at = beforeId ? dst.cards.findIndex((c) => c.id === beforeId) : -1;
++    dst.cards.splice(at < 0 ? dst.cards.length : at, 0, src.card);
++  });
++}
++
++// ---- toast -------------------------------------------------------------
++
++let toastTimer;
++function toast(msg, undo) {
++  const t = $('toast');
++  t.replaceChildren(h('span', {}, msg));
++  if (undo) {
++    t.append(h('button', { type: 'button', onclick: () => { undo(); t.hidden = true; } }, 'Undo'));
++  }
++  t.hidden = false;
++  clearTimeout(toastTimer);
++  toastTimer = setTimeout(() => { t.hidden = true; }, undo ? 8000 : 4000);
++}
++
++// ---- rendering ---------------------------------------------------------
++
++const pad = (n) => String(n).padStart(2, '0');
++function todayStr() {
++  const d = new Date();
++  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
++}
++const fmtDue = (s) => new Date(s + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
++
++const matches = (card) => {
++  if (!query) return true;
++  const q = query.toLowerCase();
++  return card.title.toLowerCase().includes(q) || card.notes.toLowerCase().includes(q) || card.label === q;
++};
++
++function cardEl(card) {
++  const today = todayStr();
++  const due = card.due && h('span', {
++    class: 'due' + (card.due < today ? ' overdue' : card.due === today ? ' today' : ''),
++  }, '⏰ ' + fmtDue(card.due));
++  const el = h('div', {
++    class: 'card', draggable: 'true', tabindex: '0', 'data-id': card.id,
++    style: card.label ? `border-left-color: var(--${card.label})` : null,
++    onclick: () => openCard(card.id),
++    onkeydown: (e) => { if (e.key === 'Enter' && e.target === el) openCard(card.id); },
++    ondragstart: (e) => {
++      e.dataTransfer.setData('text/plain', card.id);
++      e.dataTransfer.effectAllowed = 'move';
++      setTimeout(() => el.classList.add('dragging'), 0);
++    },
++    ondragend: () => { el.classList.remove('dragging'); removePlaceholder(); },
++  }, h('div', { class: 'title' }, card.title));
++  if (due || card.notes) el.append(h('div', { class: 'meta' }, due, card.notes && h('span', { title: 'Has notes' }, '≡')));
++  return el;
++}
++
++const placeholder = h('div', { class: 'placeholder' });
++function removePlaceholder() { placeholder.remove(); }
++
++function columnEl(col, idx) {
++  const list = h('div', {
++    class: 'cards',
++    ondragover: (e) => {
++      e.preventDefault();
++      e.dataTransfer.dropEffect = 'move';
++      const others = [...list.querySelectorAll('.card:not(.dragging)')];
++      const next = others.find((c) => {
++        const r = c.getBoundingClientRect();
++        return e.clientY < r.top + r.height / 2;
++      });
++      list.insertBefore(placeholder, next || null);
++    },
++    ondragleave: (e) => { if (!list.contains(e.relatedTarget)) removePlaceholder(); },
++    ondrop: (e) => {
++      e.preventDefault();
++      const id = e.dataTransfer.getData('text/plain');
++      const next = placeholder.nextElementSibling;
++      const beforeId = next && next.dataset.id;
++      removePlaceholder();
++      if (id) moveCard(id, col.id, beforeId);
++    },
++  });
++  const visible = col.cards.filter(matches);
++  visible.forEach((c) => list.append(cardEl(c)));
++  if (!visible.length) list.append(h('div', { class: 'empty' }, query ? 'No matches' : 'No cards'));
++
++  const count = query ? `${visible.length}/${col.cards.length}` : String(col.cards.length);
++  const head = h('div', { class: 'col-head' },
++    h('input', {
++      class: 'col-title', value: col.title, maxlength: '60', 'aria-label': 'Column title',
++      onchange: (e) => {
++        const v = e.target.value.trim();
++        if (!v) { e.target.value = col.title; return; }
++        change(() => { col.title = v; });
++      },
++      onkeydown: (e) => { if (e.key === 'Enter') e.target.blur(); },
++    }),
++    h('span', { class: 'count' }, count),
++    h('button', { class: 'icon', type: 'button', title: 'Move left', disabled: idx === 0, onclick: () => shiftColumn(idx, -1) }, '◀'),
++    h('button', { class: 'icon', type: 'button', title: 'Move right', disabled: idx === state.columns.length - 1, onclick: () => shiftColumn(idx, 1) }, '▶'),
++    h('button', { class: 'icon', type: 'button', title: 'Delete column', onclick: () => deleteColumn(col) }, '✕'),
++  );
++
++  const foot = adding === col.id ? addForm(col) : h('button', {
++    class: 'add', type: 'button', onclick: () => { adding = col.id; render(); },
++  }, '+ Add card');
++
++  return h('section', { class: 'column', 'aria-label': col.title }, head, list, foot);
++}
++
++function addForm(col) {
++  const ta = h('textarea', { rows: '2', placeholder: 'Card title…  (Enter to add, Esc to close)', maxlength: '200' });
++  const submit = () => {
++    const title = ta.value.trim();
++    if (!title) return;
++    change(() => { col.cards.push({ id: uid(), title, notes: '', due: '', label: '' }); });
++  };
++  ta.addEventListener('keydown', (e) => {
++    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
++    else if (e.key === 'Escape') { adding = null; render(); }
++  });
++  setTimeout(() => ta.focus(), 0);
++  return h('div', { class: 'add-form' }, ta, h('div', { class: 'row' },
++    h('button', { class: 'primary', type: 'button', onclick: submit }, 'Add'),
++    h('button', { type: 'button', onclick: () => { adding = null; render(); } }, 'Close')));
++}
++
++function shiftColumn(i, d) {
++  change(() => {
++    const [c] = state.columns.splice(i, 1);
++    state.columns.splice(i + d, 0, c);
++  });
++}
++
++function deleteColumn(col) {
++  const n = col.cards.length;
++  if (n && !confirm(`Delete "${col.title}" and its ${n} card${n === 1 ? '' : 's'}?`)) return;
++  change(() => { state.columns = state.columns.filter((c) => c !== col); }, `Deleted column "${col.title}"`);
++}
++
++function newColumnEl() {
++  const input = h('input', { placeholder: '+ Add column', maxlength: '60', 'aria-label': 'New column title' });
++  const add = () => {
++    const title = input.value.trim();
++    if (!title) return;
++    change(() => { state.columns.push({ id: uid(), title, cards: [] }); });
++  };
++  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
++  return h('div', { class: 'new-col' }, input, h('button', { type: 'button', onclick: add }, 'Add'));
++}
++
++function render() {
++  const board = $('board');
++  const scroll = board.scrollLeft;
++  board.replaceChildren(...state.columns.map(columnEl), newColumnEl());
++  board.scrollLeft = scroll;
++}
++
++// ---- card dialog -------------------------------------------------------
++
++const dlg = $('cardDialog');
++
++function openCard(id) {
++  const f = findCard(id);
++  if (!f) return;
++  editingId = id;
++  $('fTitle').value = f.card.title;
++  $('fNotes').value = f.card.notes;
++  $('fDue').value = f.card.due;
++  $('fLabel').value = f.card.label;
++  $('fColumn').replaceChildren(...state.columns.map((c) => {
++    const o = h('option', { value: c.id }, c.title);
++    o.selected = c.id === f.col.id;
++    return o;
++  }));
++  dlg.showModal();
++  $('fTitle').focus();
++}
++
++$('cardForm').addEventListener('submit', () => {
++  const f = findCard(editingId);
++  const title = $('fTitle').value.trim();
++  if (!f || !title) return;
++  change(() => {
++    Object.assign(f.card, {
++      title, notes: $('fNotes').value, due: $('fDue').value, label: $('fLabel').value,
++    });
++    const to = $('fColumn').value;
++    if (to !== f.col.id) {
++      const dst = state.columns.find((c) => c.id === to);
++      if (dst) { f.col.cards.splice(f.i, 1); dst.cards.push(f.card); }
++    }
++  });
++});
++
++$('fCancel').addEventListener('click', () => dlg.close());
++$('fDelete').addEventListener('click', () => {
++  const f = findCard(editingId);
++  dlg.close();
++  if (f) change(() => { f.col.cards.splice(f.i, 1); }, `Deleted "${f.card.title}"`);
++});
++dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
++
++// ---- toolbar -----------------------------------------------------------
++
++$('search').addEventListener('input', (e) => { query = e.target.value.trim(); render(); });
++
++$('export').addEventListener('click', () => {
++  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
++  const a = h('a', { href: URL.createObjectURL(blob), download: `kanban-${todayStr()}.json` });
++  document.body.append(a);
++  a.click();
++  a.remove();
++  URL.revokeObjectURL(a.href);
++});
++
++$('import').addEventListener('click', () => $('importFile').click());
++$('importFile').addEventListener('change', async (e) => {
++  const file = e.target.files[0];
++  e.target.value = '';
++  if (!file) return;
++  let next;
++  try { next = sanitize(JSON.parse(await file.text())); } catch (err) { next = null; }
++  if (!next) { toast('That file is not a valid board export.'); return; }
++  if (!confirm('Replace the current board with the imported one? (You can undo.)')) return;
++  change(() => { state = next; }, 'Board imported');
++});
++
++document.addEventListener('keydown', (e) => {
++  const tag = (e.target.tagName || '').toLowerCase();
++  if (e.key === '/' && !['input', 'textarea', 'select'].includes(tag) && !dlg.open) {
++    e.preventDefault();
++    $('search').focus();
++  }
++});
++
++// Keep multiple tabs in sync.
++window.addEventListener('storage', (e) => {
++  if (e.key !== KEY || dlg.open) return;
++  state = load();
++  render();
++});
++
++render();
++})();
+diff --git a/board/index.html b/board/index.html
+new file mode 100644
+index 0000000..18bb2ca
+--- /dev/null
++++ b/board/index.html
+@@ -0,0 +1,60 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Kanban</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<header class="bar">
++  <h1>Kanban</h1>
++  <input id="search" type="search" placeholder="Search cards  ( / )" aria-label="Search cards">
++  <span class="spacer"></span>
++  <button id="export" type="button">Export</button>
++  <button id="import" type="button">Import</button>
++  <input id="importFile" type="file" accept="application/json,.json" hidden>
++</header>
++
++<main id="board" class="board" aria-label="Board"></main>
++
++<dialog id="cardDialog">
++  <form id="cardForm" method="dialog">
++    <label>Title
++      <input id="fTitle" required maxlength="200">
++    </label>
++    <label>Notes
++      <textarea id="fNotes" rows="6" placeholder="Details, links, next steps…"></textarea>
++    </label>
++    <div class="row">
++      <label>Due
++        <input id="fDue" type="date">
++      </label>
++      <label>Label
++        <select id="fLabel">
++          <option value="">None</option>
++          <option value="red">Red</option>
++          <option value="orange">Orange</option>
++          <option value="yellow">Yellow</option>
++          <option value="green">Green</option>
++          <option value="blue">Blue</option>
++          <option value="purple">Purple</option>
++        </select>
++      </label>
++      <label>Column
++        <select id="fColumn"></select>
++      </label>
++    </div>
++    <div class="actions">
++      <button id="fDelete" type="button" class="danger">Delete</button>
++      <span class="spacer"></span>
++      <button id="fCancel" type="button">Cancel</button>
++      <button type="submit" class="primary">Save</button>
++    </div>
++  </form>
++</dialog>
++
++<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/board/style.css b/board/style.css
+new file mode 100644
+index 0000000..37a6f57
+--- /dev/null
++++ b/board/style.css
+@@ -0,0 +1,66 @@
++:root {
++  --bg: #f4f5f7; --col: #e6e8ec; --card: #fff; --text: #1d2330; --muted: #6b7385;
++  --line: #d3d7de; --accent: #3b6cf6; --danger: #d63c3c; --warn: #b87500;
++  --red: #e5484d; --orange: #f76b15; --yellow: #e0a800; --green: #30a46c; --blue: #0091ff; --purple: #8e4ec6;
++}
++@media (prefers-color-scheme: dark) {
++  :root { --bg: #14171d; --col: #1d222b; --card: #272d38; --text: #e6e9ef; --muted: #98a1b3;
++          --line: #3a4150; --accent: #6b8cff; --danger: #ff6b6b; --warn: #f0b429; }
++}
++* { box-sizing: border-box; }
++html, body { height: 100%; margin: 0; }
++body { display: flex; flex-direction: column; background: var(--bg); color: var(--text);
++       font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
++button, input, select, textarea { font: inherit; color: inherit; }
++button { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
++button:hover { border-color: var(--accent); }
++button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
++button.danger { color: var(--danger); }
++input, select, textarea { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
++:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
++.spacer { flex: 1; }
++
++.bar { display: flex; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); }
++.bar h1 { font-size: 18px; margin: 0 12px 0 0; }
++.bar input[type=search] { width: 260px; max-width: 40vw; }
++
++.board { flex: 1; display: flex; gap: 12px; padding: 16px; overflow-x: auto; align-items: flex-start; }
++.column { flex: 0 0 290px; max-height: 100%; display: flex; flex-direction: column;
++          background: var(--col); border-radius: 10px; padding: 8px; }
++.col-head { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; }
++.col-title { flex: 1; min-width: 0; font-weight: 600; background: transparent; border-color: transparent; }
++.col-title:hover, .col-title:focus { background: var(--card); border-color: var(--line); }
++.count { color: var(--muted); font-size: 12px; min-width: 18px; text-align: center; }
++.icon { padding: 2px 6px; border-color: transparent; background: transparent; color: var(--muted); }
++.icon:hover { color: var(--text); }
++.cards { flex: 1; overflow-y: auto; min-height: 24px; display: flex; flex-direction: column; gap: 8px; padding: 2px; }
++.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
++        cursor: grab; border-left: 4px solid var(--line); word-break: break-word; }
++.card:hover { border-color: var(--accent); }
++.card.dragging { opacity: .4; }
++.card .title { white-space: pre-wrap; }
++.meta { display: flex; gap: 8px; margin-top: 4px; font-size: 12px; color: var(--muted); }
++.due.overdue { color: var(--danger); font-weight: 600; }
++.due.today { color: var(--warn); font-weight: 600; }
++.placeholder { height: 36px; border: 2px dashed var(--accent); border-radius: 8px; flex: none; }
++.add { margin-top: 8px; text-align: left; background: transparent; border-color: transparent; color: var(--muted); }
++.add:hover { color: var(--text); }
++.add-form { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
++.add-form textarea { resize: vertical; }
++.add-form .row { display: flex; gap: 6px; }
++.new-col { flex: 0 0 290px; display: flex; gap: 6px; }
++.new-col input { flex: 1; min-width: 0; }
++.empty { color: var(--muted); text-align: center; padding: 8px; font-size: 12px; }
++
++dialog { border: 1px solid var(--line); border-radius: 10px; padding: 16px; width: min(480px, 92vw);
++         background: var(--bg); color: var(--text); }
++dialog::backdrop { background: rgba(0,0,0,.4); }
++dialog label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; font-size: 12px; color: var(--muted); }
++dialog label input, dialog label textarea, dialog label select { color: var(--text); font-size: 14px; }
++dialog .row { display: flex; gap: 8px; } dialog .row label { flex: 1; min-width: 0; }
++.actions { display: flex; gap: 8px; align-items: center; }
++
++.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text);
++         color: var(--bg); padding: 8px 14px; border-radius: 8px; display: flex; gap: 12px; align-items: center; }
++.toast[hidden] { display: none; }
++.toast button { background: transparent; color: inherit; border-color: currentColor; padding: 2px 8px; }

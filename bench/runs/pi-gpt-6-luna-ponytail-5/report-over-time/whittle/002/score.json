@@ -1,0 +1,27 @@
+{
+  "task": "report-over-time",
+  "arm": "whittle",
+  "run": "002",
+  "checks": 40,
+  "passed": 39,
+  "missed": [
+    "test_r23_invalid_date"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 154,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 76.2,
+    "tokens": {
+      "input": 38140,
+      "output": 5674,
+      "cacheRead": 38912,
+      "cost": 0.00704
+    },
+    "turns": 22,
+    "tool_calls": 22
+  }
+}

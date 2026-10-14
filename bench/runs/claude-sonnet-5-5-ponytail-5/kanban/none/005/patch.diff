@@ -1,0 +1,787 @@
+diff --git a/board/app.js b/board/app.js
+new file mode 100644
+index 0000000..94492cd
+--- /dev/null
++++ b/board/app.js
+@@ -0,0 +1,619 @@
++(function () {
++'use strict';
++
++const KEY = 'kanban.v1';
++const THEME_KEY = 'kanban.theme';
++const PRIORITIES = ['none', 'low', 'medium', 'high'];
++
++// ---------- helpers ----------
++const $ = (s) => document.querySelector(s);
++const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
++
++function h(tag, attrs, ...kids) {
++  const el = document.createElement(tag);
++  for (const [k, v] of Object.entries(attrs || {})) {
++    if (v == null || v === false) continue;
++    if (k === 'class') el.className = v;
++    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
++    else if (k in el && k !== 'list') el[k] = v;
++    else el.setAttribute(k, v === true ? '' : v);
++  }
++  for (const kid of kids.flat()) {
++    if (kid == null || kid === false) continue;
++    el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
++  }
++  return el;
++}
++
++function todayStr() {
++  const d = new Date();
++  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
++}
++function dayDiff(dateStr) {
++  const [y, m, d] = dateStr.split('-').map(Number);
++  const [ty, tm, td] = todayStr().split('-').map(Number);
++  return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(ty, tm - 1, td)) / 864e5);
++}
++function fmtDate(s) {
++  const [y, m, d] = s.split('-').map(Number);
++  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
++}
++function labelColor(name) {
++  let x = 0;
++  for (const c of name.toLowerCase()) x = (x * 31 + c.charCodeAt(0)) >>> 0;
++  return 'hsl(' + (x % 360) + ',55%,42%)';
++}
++function parseLabels(str) {
++  const seen = new Set(), out = [];
++  for (const raw of str.split(',')) {
++    const t = raw.trim();
++    if (t && !seen.has(t.toLowerCase())) { seen.add(t.toLowerCase()); out.push(t.slice(0, 30)); }
++  }
++  return out;
++}
++
++// ---------- state ----------
++function defaultState() {
++  const cols = [
++    { id: uid() + 'a', title: 'To do', wip: 0, done: false, cards: [] },
++    { id: uid() + 'b', title: 'Doing', wip: 3, done: false, cards: [] },
++    { id: uid() + 'c', title: 'Done', wip: 0, done: true, cards: [] },
++  ];
++  return { v: 1, columns: cols, cards: {}, archive: [] };
++}
++
++function sanitize(raw) {
++  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.columns) || typeof raw.cards !== 'object' || !raw.cards) {
++    throw new Error('Not a valid board file');
++  }
++  const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
++  const card = (c) => ({
++    id: str(c.id, 60) || uid(),
++    title: str(c.title, 500) || 'Untitled',
++    desc: str(c.desc, 20000),
++    labels: Array.isArray(c.labels) ? c.labels.filter((l) => typeof l === 'string').slice(0, 20) : [],
++    due: /^\d{4}-\d{2}-\d{2}$/.test(c.due) ? c.due : '',
++    priority: PRIORITIES.includes(c.priority) ? c.priority : 'none',
++    checklist: Array.isArray(c.checklist)
++      ? c.checklist.map((i) => ({ id: str(i.id, 60) || uid(), text: str(i.text, 300), done: !!i.done }))
++      : [],
++    created: Number(c.created) || Date.now(),
++    updated: Number(c.updated) || Date.now(),
++    completed: Number(c.completed) || 0,
++  });
++  const cards = {};
++  for (const [id, c] of Object.entries(raw.cards)) if (c && typeof c === 'object') { const k = card({ ...c, id }); cards[k.id] = k; }
++  const placed = new Set();
++  const columns = raw.columns.filter((c) => c && typeof c === 'object').map((c) => ({
++    id: str(c.id, 60) || uid(),
++    title: str(c.title, 100) || 'Column',
++    wip: Math.max(0, parseInt(c.wip, 10) || 0),
++    done: !!c.done,
++    cards: (Array.isArray(c.cards) ? c.cards : []).filter((id) => cards[id] && !placed.has(id) && placed.add(id)),
++  }));
++  if (!columns.length) columns.push({ id: uid(), title: 'To do', wip: 0, done: false, cards: [] });
++  // orphans go to first column
++  for (const id of Object.keys(cards)) if (!placed.has(id)) columns[0].cards.push(id);
++  const archive = (Array.isArray(raw.archive) ? raw.archive : []).filter((c) => c && typeof c === 'object').map(card);
++  return { v: 1, columns, cards, archive };
++}
++
++let state;
++let storageOK = true;
++function load() {
++  try {
++    const s = localStorage.getItem(KEY);
++    if (s) return sanitize(JSON.parse(s));
++  } catch (e) {
++    try { localStorage.setItem(KEY + '.corrupt', localStorage.getItem(KEY) || ''); } catch (_) {}
++    setTimeout(() => toast('Saved data was unreadable; a copy was kept and a fresh board started.'), 0);
++  }
++  return defaultState();
++}
++function save() {
++  try { localStorage.setItem(KEY, JSON.stringify(state)); storageOK = true; }
++  catch (e) { if (storageOK) toast('Could not save to browser storage — export your data!'); storageOK = false; }
++}
++
++const undoStack = [], redoStack = [];
++function commit(fn, opts) {
++  undoStack.push(JSON.stringify(state));
++  if (undoStack.length > 100) undoStack.shift();
++  redoStack.length = 0;
++  fn();
++  save();
++  render();
++  return opts;
++}
++function undo() {
++  if (!undoStack.length) return;
++  redoStack.push(JSON.stringify(state));
++  state = JSON.parse(undoStack.pop());
++  save(); render();
++}
++function redo() {
++  if (!redoStack.length) return;
++  undoStack.push(JSON.stringify(state));
++  state = JSON.parse(redoStack.pop());
++  save(); render();
++}
++
++const findCol = (id) => state.columns.find((c) => c.id === id);
++const colOfCard = (id) => state.columns.find((c) => c.cards.includes(id));
++
++function moveCard(cardId, toColId, beforeId) {
++  const from = colOfCard(cardId), to = findCol(toColId);
++  if (!to || !from) return;
++  commit(() => {
++    from.cards.splice(from.cards.indexOf(cardId), 1);
++    let i = beforeId ? to.cards.indexOf(beforeId) : -1;
++    if (i < 0) i = to.cards.length;
++    to.cards.splice(i, 0, cardId);
++    const c = state.cards[cardId];
++    c.updated = Date.now();
++    if (from !== to) c.completed = to.done ? Date.now() : 0;
++  });
++}
++
++function archiveCard(id) {
++  const col = colOfCard(id);
++  if (!col) return;
++  commit(() => {
++    col.cards.splice(col.cards.indexOf(id), 1);
++    state.archive.unshift(state.cards[id]);
++    delete state.cards[id];
++  });
++  toast('Card archived', 'Undo', undo);
++}
++function deleteCard(id) {
++  const col = colOfCard(id);
++  if (!col) return;
++  commit(() => { col.cards.splice(col.cards.indexOf(id), 1); delete state.cards[id]; });
++  toast('Card deleted', 'Undo', undo);
++}
++
++// ---------- toast ----------
++let toastTimer;
++function toast(msg, actionLabel, action) {
++  const t = $('#toast');
++  t.replaceChildren(h('span', {}, msg));
++  if (actionLabel) t.append(h('button', { onclick: () => { action(); t.hidden = true; } }, actionLabel));
++  t.hidden = false;
++  clearTimeout(toastTimer);
++  toastTimer = setTimeout(() => { t.hidden = true; }, actionLabel ? 6000 : 4000);
++}
++
++// ---------- filters ----------
++const filters = { q: '', label: '', due: '' };
++const filtersActive = () => !!(filters.q || filters.label || filters.due);
++function matches(card, col) {
++  if (filters.q) {
++    const q = filters.q.toLowerCase();
++    const hay = (card.title + '\n' + card.desc + '\n' + card.labels.join(' ')).toLowerCase();
++    if (!hay.includes(q)) return false;
++  }
++  if (filters.label && !card.labels.some((l) => l.toLowerCase() === filters.label.toLowerCase())) return false;
++  if (filters.due) {
++    if (filters.due === 'none') return !card.due;
++    if (!card.due) return false;
++    const d = dayDiff(card.due);
++    if (filters.due === 'overdue') return d < 0 && !col.done;
++    if (filters.due === 'week') return d >= 0 && d <= 7;
++  }
++  return true;
++}
++function refreshLabelFilter() {
++  const all = new Set();
++  for (const c of Object.values(state.cards)) c.labels.forEach((l) => all.add(l));
++  const sel = $('#filter-label');
++  if (filters.label && ![...all].some((l) => l.toLowerCase() === filters.label.toLowerCase())) filters.label = '';
++  sel.replaceChildren(h('option', { value: '' }, 'All labels'),
++    [...all].sort((a, b) => a.localeCompare(b)).map((l) => h('option', { value: l, selected: l === filters.label }, l)));
++}
++
++// ---------- drag & drop ----------
++let drag = null; // {type:'card'|'col', id}
++const dropLine = h('div', { class: 'drop-line' });
++
++function dropTarget(listEl, y) {
++  const els = [...listEl.querySelectorAll('.card:not(.dragging)')];
++  for (const el of els) {
++    const r = el.getBoundingClientRect();
++    if (y < r.top + r.height / 2) return el;
++  }
++  return null;
++}
++
++// ---------- render ----------
++let quickOpen = null; // column id with open quick-add
++let quickText = '';
++
++function cardEl(card, col) {
++  const done = card.checklist.filter((i) => i.done).length;
++  const meta = [];
++  if (card.due) {
++    const d = dayDiff(card.due);
++    let cls = 'badge', txt = fmtDate(card.due);
++    if (col.done) cls += ' complete';
++    else if (d < 0) { cls += ' overdue'; txt += ' · overdue'; }
++    else if (d <= 2) { cls += ' soon'; txt += d === 0 ? ' · today' : d === 1 ? ' · tomorrow' : ''; }
++    meta.push(h('span', { class: cls }, '📅 ' + txt));
++  }
++  if (card.checklist.length) meta.push(h('span', { class: 'badge' + (done === card.checklist.length ? ' complete' : '') }, '☑ ' + done + '/' + card.checklist.length));
++  if (card.desc) meta.push(h('span', { title: 'Has description' }, '≡'));
++  const el = h('div', {
++    class: 'card' + (card.priority !== 'none' ? ' p-' + card.priority : ''),
++    draggable: true, tabIndex: 0, 'data-id': card.id,
++    ondragstart: (e) => { drag = { type: 'card', id: card.id }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', card.id); setTimeout(() => el.classList.add('dragging'), 0); },
++    ondragend: () => { drag = null; dropLine.remove(); render(); },
++    onclick: () => openCard(card.id),
++    onkeydown: (e) => { if (e.key === 'Enter' && e.target === el) openCard(card.id); },
++  },
++    card.labels.length ? h('div', { class: 'card-meta', style: 'margin:0 0 4px' }, card.labels.map((l) => h('span', { class: 'label', style: 'background:' + labelColor(l) }, l))) : null,
++    h('div', { class: 'card-title' }, card.title),
++    meta.length ? h('div', { class: 'card-meta' }, meta) : null);
++  return el;
++}
++
++function columnEl(col) {
++  const visible = col.cards.filter((id) => matches(state.cards[id], col));
++  const over = col.wip > 0 && col.cards.length > col.wip;
++  const list = h('div', { class: 'cards' },
++    visible.map((id) => cardEl(state.cards[id], col)),
++    !visible.length ? h('div', { class: 'empty' }, filtersActive() && col.cards.length ? 'No matches' : 'No cards') : null);
++
++  const el = h('section', { class: 'column', 'data-id': col.id },
++    h('div', {
++      class: 'col-head', draggable: true,
++      ondragstart: (e) => { drag = { type: 'col', id: col.id }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', col.id); setTimeout(() => el.classList.add('dragging'), 0); },
++      ondragend: () => { drag = null; el.classList.remove('dragging'); document.querySelectorAll('.drop').forEach((x) => x.classList.remove('drop')); },
++    },
++      col.done ? h('span', { class: 'col-done-mark', title: 'Done column' }, '✓') : null,
++      h('span', { class: 'col-title' }, col.title),
++      h('span', { class: 'col-count' + (over ? ' over' : ''), title: over ? 'WIP limit exceeded' : '' },
++        col.wip ? col.cards.length + '/' + col.wip : col.cards.length),
++      h('button', { class: 'ghost', title: 'Column settings', 'aria-label': 'Column settings', onclick: () => openColumn(col.id) }, '⋯')),
++    list,
++    h('div', { class: 'col-foot' }, quickOpen === col.id ? quickForm(col) : h('button', { class: 'add', onclick: () => openQuick(col.id) }, '+ Add card')));
++
++  // card drop target
++  el.addEventListener('dragover', (e) => {
++    if (!drag) return;
++    e.preventDefault();
++    if (drag.type === 'card') {
++      el.classList.add('drop');
++      const before = dropTarget(list, e.clientY);
++      list.insertBefore(dropLine, before);
++      const empty = list.querySelector('.empty'); if (empty) empty.remove();
++    } else if (drag.id !== col.id) el.classList.add('drop');
++  });
++  el.addEventListener('dragleave', (e) => { if (!el.contains(e.relatedTarget)) { el.classList.remove('drop'); if (dropLine.parentNode === list) dropLine.remove(); } });
++  el.addEventListener('drop', (e) => {
++    if (!drag) return;
++    e.preventDefault();
++    const d = drag; drag = null;
++    if (d.type === 'card') {
++      const before = dropTarget(list, e.clientY);
++      dropLine.remove();
++      moveCard(d.id, col.id, before ? before.dataset.id : null);
++    } else if (d.id !== col.id) {
++      const rect = el.getBoundingClientRect();
++      const after = e.clientX > rect.left + rect.width / 2;
++      commit(() => {
++        const moving = state.columns.splice(state.columns.findIndex((c) => c.id === d.id), 1)[0];
++        let i = state.columns.findIndex((c) => c.id === col.id);
++        if (after) i++;
++        state.columns.splice(i, 0, moving);
++      });
++    }
++  });
++  return el;
++}
++
++function openQuick(colId) {
++  quickOpen = colId; quickText = '';
++  render();
++  const ta = document.querySelector('.quick textarea');
++  if (ta) { ta.focus(); ta.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
++}
++function closeQuick() { quickOpen = null; quickText = ''; render(); }
++
++function quickForm(col) {
++  const submit = () => {
++    const lines = ta.value.split('\n').map((s) => s.trim()).filter(Boolean);
++    if (!lines.length) { closeQuick(); return; }
++    commit(() => {
++      for (const t of lines) {
++        const c = { id: uid(), title: t.slice(0, 500), desc: '', labels: [], due: '', priority: 'none', checklist: [], created: Date.now(), updated: Date.now(), completed: col.done ? Date.now() : 0 };
++        state.cards[c.id] = c; col.cards.push(c.id);
++      }
++    });
++    openQuick(col.id); // stay open for rapid entry
++  };
++  const ta = h('textarea', {
++    placeholder: 'Card title… (one card per line)', value: quickText, rows: 2,
++    oninput: () => { quickText = ta.value; },
++    onkeydown: (e) => {
++      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
++      else if (e.key === 'Escape') { e.preventDefault(); closeQuick(); }
++    },
++  });
++  return h('div', { class: 'quick' }, ta,
++    h('div', { class: 'row' }, h('button', { class: 'primary', onclick: submit }, 'Add'), h('button', { class: 'ghost', onclick: closeQuick }, 'Cancel')));
++}
++
++function render() {
++  refreshLabelFilter();
++  const board = $('#board');
++  const scroll = board.scrollLeft;
++  const scrolls = [...board.querySelectorAll('.cards')].map((e) => e.scrollTop);
++  board.replaceChildren(
++    state.columns.map(columnEl),
++    h('div', { class: 'add-col' }, h('button', { onclick: addColumn }, '+ Add column')));
++  board.scrollLeft = scroll;
++  board.querySelectorAll('.cards').forEach((e, i) => { if (scrolls[i]) e.scrollTop = scrolls[i]; });
++  $('#btn-undo').disabled = !undoStack.length;
++  $('#btn-redo').disabled = !redoStack.length;
++  $('#archive-count').textContent = state.archive.length ? '(' + state.archive.length + ')' : '';
++}
++
++// ---------- column dialogs ----------
++function addColumn() {
++  commit(() => state.columns.push({ id: uid(), title: 'New column', wip: 0, done: false, cards: [] }));
++  openColumn(state.columns[state.columns.length - 1].id);
++}
++
++function openColumn(id) {
++  const col = findCol(id);
++  if (!col) return;
++  const dlg = $('#dlg-column');
++  const title = h('input', { type: 'text', value: col.title, maxLength: 100, required: true });
++  const wip = h('input', { type: 'number', min: 0, value: col.wip, title: '0 = no limit' });
++  const done = h('input', { type: 'checkbox', checked: col.done });
++  const idx = state.columns.indexOf(col);
++  const form = h('form', { class: 'dlg', method: 'dialog' },
++    h('h2', {}, 'Column settings'),
++    h('label', {}, 'Name', title),
++    h('label', {}, 'WIP limit (0 = none)', wip),
++    h('label', { class: 'check' }, done, 'Counts as “done” (cards here aren’t flagged overdue)'),
++    h('div', { class: 'actions' },
++      h('div', { class: 'left' },
++        h('button', { type: 'button', class: 'danger', onclick: () => {
++          const n = col.cards.length;
++          if (state.columns.length === 1) { alert('A board needs at least one column.'); return; }
++          if (!confirm(n ? 'Delete “' + col.title + '” and archive its ' + n + ' card(s)?' : 'Delete “' + col.title + '”?')) return;
++          dlg.close();
++          commit(() => {
++            for (const cid of col.cards) { state.archive.unshift(state.cards[cid]); delete state.cards[cid]; }
++            state.columns.splice(state.columns.indexOf(col), 1);
++          });
++        } }, 'Delete'),
++        col.cards.length ? h('button', { type: 'button', onclick: () => {
++          if (!confirm('Archive all ' + col.cards.length + ' card(s) in this column?')) return;
++          dlg.close();
++          commit(() => { for (const cid of col.cards) { state.archive.unshift(state.cards[cid]); delete state.cards[cid]; } col.cards = []; });
++          toast('Cards archived', 'Undo', undo);
++        } }, 'Archive all') : null),
++      h('button', { type: 'button', disabled: idx === 0, title: 'Move left', onclick: () => { dlg.close(); commit(() => { state.columns.splice(idx, 1); state.columns.splice(idx - 1, 0, col); }); } }, '←'),
++      h('button', { type: 'button', disabled: idx === state.columns.length - 1, title: 'Move right', onclick: () => { dlg.close(); commit(() => { state.columns.splice(idx, 1); state.columns.splice(idx + 1, 0, col); }); } }, '→'),
++      h('button', { type: 'button', onclick: () => dlg.close() }, 'Cancel'),
++      h('button', { class: 'primary' }, 'Save')));
++  form.addEventListener('submit', () => {
++    const t = title.value.trim() || col.title;
++    commit(() => { col.title = t; col.wip = Math.max(0, parseInt(wip.value, 10) || 0); col.done = done.checked; });
++  });
++  dlg.replaceChildren(form);
++  dlg.showModal();
++  title.select();
++}
++
++// ---------- card dialog ----------
++function openCard(id) {
++  const card = state.cards[id];
++  const col = colOfCard(id);
++  if (!card) return;
++  const w = JSON.parse(JSON.stringify(card)); // working copy
++  const dlg = $('#dlg-card');
++
++  const title = h('textarea', { rows: 2, maxLength: 500, required: true }, '');
++  title.value = w.title;
++  const desc = h('textarea', { rows: 5, placeholder: 'Notes, links, details…' });
++  desc.value = w.desc;
++  const colSel = h('select', {}, state.columns.map((c) => h('option', { value: c.id, selected: c.id === col.id }, c.title)));
++  const prio = h('select', {}, PRIORITIES.map((p) => h('option', { value: p, selected: p === w.priority }, p === 'none' ? 'No priority' : p[0].toUpperCase() + p.slice(1))));
++  const due = h('input', { type: 'date', value: w.due });
++  const labels = h('input', { type: 'text', value: w.labels.join(', '), placeholder: 'comma, separated', list: 'label-options' });
++  const known = new Set();
++  Object.values(state.cards).forEach((c) => c.labels.forEach((l) => known.add(l)));
++  const datalist = h('datalist', { id: 'label-options' }, [...known].map((l) => h('option', { value: l })));
++
++  const ckBox = h('div', { class: 'checklist' });
++  const bar = h('div', { class: 'progress' }, h('div'));
++  const renderChecklist = () => {
++    const done = w.checklist.filter((i) => i.done).length;
++    bar.hidden = !w.checklist.length;
++    bar.firstChild.style.width = (w.checklist.length ? (done / w.checklist.length) * 100 : 0) + '%';
++    ckBox.replaceChildren(w.checklist.map((item, i) => h('div', { class: 'ck' + (item.done ? ' done' : '') },
++      h('input', { type: 'checkbox', checked: item.done, 'aria-label': 'Done', onchange: (e) => { item.done = e.target.checked; renderChecklist(); } }),
++      h('input', { type: 'text', value: item.text, maxLength: 300, 'aria-label': 'Item text', oninput: (e) => { item.text = e.target.value; } }),
++      h('button', { type: 'button', class: 'ghost', title: 'Remove item', onclick: () => { w.checklist.splice(i, 1); renderChecklist(); } }, '✕'))));
++  };
++  const newItem = h('input', { type: 'text', placeholder: 'Add checklist item and press Enter', maxLength: 300,
++    onkeydown: (e) => {
++      if (e.key === 'Enter') {
++        e.preventDefault();
++        const t = newItem.value.trim();
++        if (t) { w.checklist.push({ id: uid(), text: t, done: false }); newItem.value = ''; renderChecklist(); newItem.focus(); }
++      }
++    } });
++  renderChecklist();
++
++  const form = h('form', { class: 'dlg', method: 'dialog' },
++    h('label', {}, 'Title', title),
++    h('div', { class: 'grid' },
++      h('label', {}, 'Column', colSel),
++      h('label', {}, 'Priority', prio),
++      h('label', {}, 'Due date', h('div', { style: 'display:flex;gap:6px' }, due, h('button', { type: 'button', class: 'ghost', title: 'Clear date', onclick: () => { due.value = ''; } }, '✕'))),
++      h('label', {}, 'Labels', labels, datalist)),
++    h('label', {}, 'Description', desc),
++    h('label', {}, 'Checklist', bar, ckBox, newItem),
++    h('div', { class: 'muted' }, 'Created ' + new Date(card.created).toLocaleString() +
++      (card.completed ? ' · Completed ' + new Date(card.completed).toLocaleString() : '')),
++    h('div', { class: 'actions' },
++      h('div', { class: 'left' },
++        h('button', { type: 'button', class: 'danger', onclick: () => { if (confirm('Permanently delete this card?')) { dlg.close(); deleteCard(id); } } }, 'Delete'),
++        h('button', { type: 'button', onclick: () => { dlg.close(); archiveCard(id); } }, 'Archive')),
++      h('button', { type: 'button', onclick: () => dlg.close() }, 'Cancel'),
++      h('button', { class: 'primary' }, 'Save')));
++
++  form.addEventListener('submit', () => {
++    const t = title.value.trim();
++    if (!t) return;
++    commit(() => {
++      const c = state.cards[id];
++      c.title = t; c.desc = desc.value; c.priority = prio.value; c.due = due.value;
++      c.labels = parseLabels(labels.value);
++      c.checklist = w.checklist.filter((i) => i.text.trim());
++      c.updated = Date.now();
++      const to = findCol(colSel.value);
++      if (to && to !== col) {
++        col.cards.splice(col.cards.indexOf(id), 1);
++        to.cards.push(id);
++        c.completed = to.done ? Date.now() : 0;
++      }
++    });
++  });
++  title.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); form.requestSubmit(); } });
++  dlg.replaceChildren(form);
++  dlg.showModal();
++  title.focus();
++}
++
++// ---------- archive ----------
++function openArchive() {
++  const dlg = $('#dlg-archive');
++  const draw = () => {
++    const items = state.archive.map((c, i) => h('div', { class: 'arch-item' },
++      h('span', { class: 't' }, c.title),
++      h('button', { onclick: () => {
++        commit(() => {
++          const col = state.columns[0];
++          state.archive.splice(i, 1);
++          state.cards[c.id] = c; col.cards.push(c.id);
++        });
++        draw();
++      } }, 'Restore'),
++      h('button', { class: 'danger', onclick: () => {
++        if (!confirm('Permanently delete “' + c.title + '”?')) return;
++        commit(() => { state.archive.splice(i, 1); });
++        draw();
++      } }, 'Delete')));
++    dlg.replaceChildren(h('div', { class: 'dlg' },
++      h('h2', {}, 'Archive (' + state.archive.length + ')'),
++      state.archive.length ? h('div', { class: 'arch-list' }, items) : h('p', { class: 'muted' }, 'No archived cards. Archive finished cards to keep the board clear without losing them.'),
++      h('div', { class: 'actions' },
++        state.archive.length ? h('div', { class: 'left' }, h('button', { class: 'danger', onclick: () => {
++          if (!confirm('Permanently delete all ' + state.archive.length + ' archived cards?')) return;
++          commit(() => { state.archive = []; }); draw();
++        } }, 'Empty archive')) : null,
++        h('button', { class: 'primary', onclick: () => dlg.close() }, 'Close'))));
++  };
++  draw();
++  dlg.showModal();
++}
++
++// ---------- data ----------
++function openData() {
++  const dlg = $('#dlg-data');
++  const file = h('input', { type: 'file', accept: 'application/json,.json', hidden: true,
++    onchange: async () => {
++      const f = file.files[0];
++      if (!f) return;
++      try {
++        const next = sanitize(JSON.parse(await f.text()));
++        if (!confirm('Replace the current board with “' + f.name + '”? You can undo this.')) return;
++        dlg.close();
++        commit(() => { state = next; });
++        toast('Board imported', 'Undo', undo);
++      } catch (e) { alert('Import failed: ' + e.message); }
++      file.value = '';
++    } });
++  dlg.replaceChildren(h('div', { class: 'dlg' },
++    h('h2', {}, 'Your data'),
++    h('p', { class: 'muted' }, 'Everything is stored in this browser only. Export a backup regularly, and to move the board to another browser or computer.'),
++    h('div', { class: 'actions', style: 'justify-content:flex-start' },
++      h('button', { onclick: exportData }, 'Export JSON'),
++      h('button', { onclick: () => file.click() }, 'Import JSON…'), file),
++    h('div', { class: 'actions' },
++      h('div', { class: 'left' }, h('button', { class: 'danger', onclick: () => {
++        if (!confirm('Erase the whole board, including the archive? You can undo this.')) return;
++        dlg.close(); commit(() => { state = defaultState(); });
++      } }, 'Reset board')),
++      h('button', { class: 'primary', onclick: () => dlg.close() }, 'Close'))));
++  dlg.showModal();
++}
++function exportData() {
++  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
++  const a = h('a', { href: URL.createObjectURL(blob), download: 'kanban-' + todayStr() + '.json' });
++  document.body.append(a); a.click(); a.remove();
++  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
++}
++
++// ---------- theme ----------
++function applyTheme(t) {
++  if (t) document.documentElement.dataset.theme = t;
++  else document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
++}
++
++// ---------- init ----------
++function init() {
++  state = load();
++  let theme = null;
++  try { theme = localStorage.getItem(THEME_KEY); } catch (_) {}
++  applyTheme(theme);
++
++  $('#btn-theme').onclick = () => {
++    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
++    applyTheme(next);
++    try { localStorage.setItem(THEME_KEY, next); } catch (_) {}
++  };
++  $('#btn-undo').onclick = undo;
++  $('#btn-redo').onclick = redo;
++  $('#btn-archive').onclick = openArchive;
++  $('#btn-data').onclick = openData;
++  $('#btn-help').onclick = () => $('#dlg-help').showModal();
++  $('#search').oninput = (e) => { filters.q = e.target.value.trim(); render(); };
++  $('#filter-label').onchange = (e) => { filters.label = e.target.value; render(); };
++  $('#filter-due').onchange = (e) => { filters.due = e.target.value; render(); };
++
++  document.addEventListener('keydown', (e) => {
++    const t = e.target;
++    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable;
++    const open = document.querySelector('dialog[open]');
++    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing && !open) { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
++    if (typing || open || e.ctrlKey || e.metaKey || e.altKey) return;
++    if (e.key === 'n') { e.preventDefault(); openQuick(state.columns[0].id); }
++    else if (e.key === '/') { e.preventDefault(); $('#search').focus(); }
++    else if (e.key === 'z') undo();
++    else if (e.key === 'Z') redo();
++    else if (e.key === '?') $('#dlg-help').showModal();
++  });
++
++  // click backdrop to close dialogs
++  document.querySelectorAll('dialog').forEach((d) => d.addEventListener('mousedown', (e) => { if (e.target === d) d.close(); }));
++
++  // keep tabs in sync
++  window.addEventListener('storage', (e) => {
++    if (e.key !== KEY || !e.newValue) return;
++    try { state = sanitize(JSON.parse(e.newValue)); render(); } catch (_) {}
++  });
++
++  // refresh due-date highlighting after midnight / when returning to tab
++  let day = todayStr();
++  document.addEventListener('visibilitychange', () => { if (!document.hidden && day !== todayStr()) { day = todayStr(); render(); } });
++
++  render();
++}
++
++init();
++})();
+diff --git a/board/index.html b/board/index.html
+new file mode 100644
+index 0000000..909f1bc
+--- /dev/null
++++ b/board/index.html
+@@ -0,0 +1,55 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Kanban</title>
++<link rel="stylesheet" href="styles.css">
++</head>
++<body>
++<header class="topbar">
++  <h1>Kanban</h1>
++  <input id="search" type="search" placeholder="Search cards ( / )" aria-label="Search cards">
++  <select id="filter-label" aria-label="Filter by label"><option value="">All labels</option></select>
++  <select id="filter-due" aria-label="Filter by due date">
++    <option value="">Any due date</option>
++    <option value="overdue">Overdue</option>
++    <option value="week">Due in 7 days</option>
++    <option value="none">No due date</option>
++  </select>
++  <span class="spacer"></span>
++  <button id="btn-undo" title="Undo (Z)" disabled>Undo</button>
++  <button id="btn-redo" title="Redo (Shift+Z)" disabled>Redo</button>
++  <button id="btn-archive" title="View archived cards">Archive <span id="archive-count"></span></button>
++  <button id="btn-data" title="Export / import">Data</button>
++  <button id="btn-theme" title="Toggle theme" aria-label="Toggle theme">◐</button>
++  <button id="btn-help" title="Keyboard shortcuts" aria-label="Help">?</button>
++</header>
++
++<main id="board" class="board" aria-label="Board"></main>
++
++<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
++
++<dialog id="dlg-card"></dialog>
++<dialog id="dlg-column"></dialog>
++<dialog id="dlg-archive"></dialog>
++<dialog id="dlg-data"></dialog>
++<dialog id="dlg-help">
++  <form method="dialog" class="dlg">
++    <h2>Keyboard shortcuts</h2>
++    <dl class="keys">
++      <dt>n</dt><dd>Add a card to the first column</dd>
++      <dt>/</dt><dd>Search</dd>
++      <dt>z / Shift+z</dt><dd>Undo / redo (also Ctrl/⌘+Z)</dd>
++      <dt>Enter</dt><dd>Save new card (Shift+Enter for new line)</dd>
++      <dt>Esc</dt><dd>Cancel / close</dd>
++      <dt>Enter on a card</dt><dd>Open card</dd>
++    </dl>
++    <p class="muted">Drag cards between columns, and drag column headers to reorder. On touch devices use the column picker inside a card.</p>
++    <div class="actions"><button class="primary">Close</button></div>
++  </form>
++</dialog>
++
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/board/styles.css b/board/styles.css
+new file mode 100644
+index 0000000..76719e6
+--- /dev/null
++++ b/board/styles.css
+@@ -0,0 +1,95 @@
++:root {
++  --bg: #f1f2f6; --col: #e4e6ee; --card: #fff; --text: #1d2130; --muted: #6b7185;
++  --border: #d0d4e0; --accent: #4f6bed; --danger: #d6455d; --warn: #c77d0a; --ok: #2f9e66;
++  --shadow: 0 1px 2px rgba(20,25,50,.12);
++}
++:root[data-theme="dark"] {
++  --bg: #14161d; --col: #1d2029; --card: #272b37; --text: #e6e8f0; --muted: #98a0b5;
++  --border: #383d4d; --accent: #7b92ff; --danger: #ff6b82; --warn: #f0b04a; --ok: #4cc58a;
++  --shadow: 0 1px 2px rgba(0,0,0,.4);
++}
++* { box-sizing: border-box; }
++html, body { height: 100%; margin: 0; }
++body { display: flex; flex-direction: column; background: var(--bg); color: var(--text);
++  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
++button, input, select, textarea { font: inherit; color: inherit; }
++button { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
++button:hover { border-color: var(--accent); }
++button:disabled { opacity: .45; cursor: default; }
++button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
++button.danger { color: var(--danger); }
++button.ghost { background: none; border-color: transparent; color: var(--muted); }
++button.ghost:hover { color: var(--text); background: var(--col); }
++input, select, textarea { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; }
++input:focus, select:focus, textarea:focus, button:focus-visible, .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
++textarea { width: 100%; resize: vertical; }
++.muted { color: var(--muted); }
++
++.topbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 14px;
++  background: var(--card); border-bottom: 1px solid var(--border); }
++.topbar h1 { font-size: 18px; margin: 0 8px 0 0; }
++.topbar #search { width: 220px; }
++.spacer { flex: 1; }
++
++.board { flex: 1; display: flex; gap: 12px; padding: 14px; overflow-x: auto; align-items: flex-start; }
++.column { flex: 0 0 290px; max-height: 100%; display: flex; flex-direction: column;
++  background: var(--col); border-radius: 10px; border: 2px solid transparent; }
++.column.drop { border-color: var(--accent); }
++.column.dragging { opacity: .5; }
++.col-head { display: flex; align-items: center; gap: 6px; padding: 10px 10px 6px; cursor: grab; }
++.col-title { font-weight: 600; flex: 1; overflow-wrap: anywhere; }
++.col-count { font-size: 12px; color: var(--muted); background: var(--card); border-radius: 10px; padding: 0 8px; }
++.col-count.over { background: var(--danger); color: #fff; }
++.col-done-mark { color: var(--ok); }
++.cards { overflow-y: auto; padding: 4px 8px; min-height: 24px; display: flex; flex-direction: column; gap: 8px; }
++.card { background: var(--card); border-radius: 8px; padding: 8px 10px; box-shadow: var(--shadow);
++  cursor: pointer; border-left: 4px solid transparent; }
++.card.p-high { border-left-color: var(--danger); }
++.card.p-medium { border-left-color: var(--warn); }
++.card.p-low { border-left-color: var(--ok); }
++.card.dragging { opacity: .4; }
++.card-title { overflow-wrap: anywhere; white-space: pre-wrap; }
++.card-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--muted); align-items: center; }
++.badge { padding: 0 6px; border-radius: 4px; background: var(--col); }
++.badge.overdue { background: var(--danger); color: #fff; }
++.badge.soon { background: var(--warn); color: #fff; }
++.badge.complete { background: var(--ok); color: #fff; }
++.label { padding: 0 6px; border-radius: 4px; color: #fff; font-size: 11px; }
++.drop-line { height: 3px; background: var(--accent); border-radius: 2px; flex: none; }
++.col-foot { padding: 8px; }
++.col-foot .add { width: 100%; text-align: left; color: var(--muted); background: none; border-color: transparent; }
++.col-foot .add:hover { background: var(--card); }
++.quick textarea { min-height: 54px; }
++.quick .row { display: flex; gap: 6px; margin-top: 6px; }
++.add-col { flex: 0 0 290px; }
++.add-col button { width: 100%; padding: 10px; border-style: dashed; background: none; color: var(--muted); }
++.empty { text-align: center; color: var(--muted); padding: 6px; font-size: 13px; }
++
++dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--card); color: var(--text);
++  padding: 0; width: min(560px, 94vw); max-height: 92vh; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
++dialog::backdrop { background: rgba(10,12,20,.5); }
++.dlg { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
++.dlg h2 { margin: 0; font-size: 16px; }
++.dlg label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
++.dlg label input, .dlg label select, .dlg label textarea { color: var(--text); font-size: 14px; }
++.dlg .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
++.dlg .check { flex-direction: row; align-items: center; gap: 8px; font-size: 14px; color: var(--text); }
++.actions { display: flex; gap: 8px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
++.actions .left { margin-right: auto; display: flex; gap: 8px; }
++.checklist { display: flex; flex-direction: column; gap: 4px; }
++.ck { display: flex; gap: 6px; align-items: center; }
++.ck input[type=text] { flex: 1; }
++.ck.done input[type=text] { text-decoration: line-through; color: var(--muted); }
++.progress { height: 6px; background: var(--col); border-radius: 3px; overflow: hidden; }
++.progress div { height: 100%; background: var(--ok); }
++.arch-list { overflow: auto; max-height: 60vh; display: flex; flex-direction: column; gap: 6px; }
++.arch-item { display: flex; gap: 8px; align-items: center; padding: 6px 8px; background: var(--col); border-radius: 6px; }
++.arch-item .t { flex: 1; overflow-wrap: anywhere; }
++.keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; }
++.keys dt { font-family: ui-monospace, monospace; background: var(--col); padding: 0 6px; border-radius: 4px; }
++.keys dd { margin: 0; }
++.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: #23283a; color: #fff;
++  padding: 8px 14px; border-radius: 8px; display: flex; gap: 12px; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,.4); z-index: 10; }
++.toast[hidden] { display: none; }
++.toast button { background: none; border: 1px solid #8892b0; color: #fff; padding: 2px 8px; }
++@media (max-width: 600px) { .column, .add-col { flex-basis: 84vw; } .topbar #search { width: 100%; } }

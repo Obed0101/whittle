@@ -1,0 +1,1001 @@
+diff --git a/notes/app.js b/notes/app.js
+new file mode 100644
+index 0000000..1e25b10
+--- /dev/null
++++ b/notes/app.js
+@@ -0,0 +1,725 @@
++(function () {
++  'use strict';
++
++  var KEY = 'notes.app.v1';
++  var $ = function (s) { return document.querySelector(s); };
++  var els = {};
++  ['sidebar', 'search', 'sort', 'chips', 'list', 'count', 'newBtn', 'emptyNew', 'empty', 'pane', 'title', 'body',
++    'preview', 'panes', 'tags', 'tagInput', 'tagList', 'stats', 'saved', 'pinBtn', 'delBtn', 'dlBtn', 'backBtn',
++    'trashBar', 'emptyTrash', 'trashBanner', 'restoreBtn', 'purgeBtn', 'toolbar', 'themeBtn', 'menuBtn', 'menu',
++    'exportAll', 'exportMd', 'importBtn', 'importFile', 'help', 'helpBtn', 'toast'
++  ].forEach(function (id) { els[id] = document.getElementById(id); });
++
++  var state = {
++    notes: [],
++    settings: { theme: 'auto', sort: 'updated', mode: 'edit' },
++    view: 'all',      // all | pinned | trash | tag:<name>
++    query: '',
++    currentId: null
++  };
++
++  /* ---------- utils ---------- */
++  function uid() {
++    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
++    return 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
++  }
++  function esc(s) {
++    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
++  }
++  function byId(id) {
++    for (var i = 0; i < state.notes.length; i++) if (state.notes[i].id === id) return state.notes[i];
++    return null;
++  }
++  function debounce(fn, ms) {
++    var t;
++    var d = function () { clearTimeout(t); t = setTimeout(fn, ms); };
++    d.flush = function () { if (t) { clearTimeout(t); t = null; fn(); } };
++    return d;
++  }
++  function fmtDate(ts) {
++    var d = new Date(ts), now = new Date();
++    var sameDay = d.toDateString() === now.toDateString();
++    if (sameDay) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
++    var diff = (now - d) / 864e5;
++    if (diff < 6) return d.toLocaleDateString([], { weekday: 'short' });
++    var o = { month: 'short', day: 'numeric' };
++    if (d.getFullYear() !== now.getFullYear()) o.year = 'numeric';
++    return d.toLocaleDateString([], o);
++  }
++  function normTag(t) { return String(t).trim().replace(/^#+/, '').replace(/\s+/g, '-').toLowerCase(); }
++
++  /* ---------- persistence ---------- */
++  function load() {
++    try {
++      var raw = localStorage.getItem(KEY);
++      if (!raw) return;
++      var data = JSON.parse(raw);
++      if (data && Array.isArray(data.notes)) state.notes = data.notes.map(sanitizeNote).filter(Boolean);
++      if (data && data.settings) Object.assign(state.settings, data.settings);
++    } catch (e) { console.error('load failed', e); }
++  }
++  function sanitizeNote(n) {
++    if (!n || typeof n !== 'object') return null;
++    var now = Date.now();
++    return {
++      id: typeof n.id === 'string' && n.id ? n.id : uid(),
++      title: typeof n.title === 'string' ? n.title : '',
++      body: typeof n.body === 'string' ? n.body : '',
++      tags: Array.isArray(n.tags) ? n.tags.map(normTag).filter(Boolean) : [],
++      pinned: !!n.pinned,
++      trashed: !!n.trashed,
++      created: Number(n.created) || now,
++      updated: Number(n.updated) || Number(n.created) || now
++    };
++  }
++  function persist() {
++    try {
++      localStorage.setItem(KEY, JSON.stringify({ notes: state.notes, settings: state.settings }));
++      els.saved.textContent = 'Saved';
++      els.saved.style.color = '';
++      return true;
++    } catch (e) {
++      els.saved.textContent = 'Could not save — storage full or blocked. Export a backup!';
++      els.saved.style.color = 'var(--danger)';
++      return false;
++    }
++  }
++  var persistSoon = debounce(persist, 300);
++  var renderListSoon = debounce(renderList, 150);
++
++  /* ---------- toast ---------- */
++  var toastTimer;
++  function toast(msg, actionLabel, action) {
++    clearTimeout(toastTimer);
++    els.toast.innerHTML = '';
++    var s = document.createElement('span');
++    s.textContent = msg;
++    els.toast.appendChild(s);
++    if (actionLabel) {
++      var b = document.createElement('button');
++      b.textContent = actionLabel;
++      b.onclick = function () { els.toast.hidden = true; action(); };
++      els.toast.appendChild(b);
++    }
++    els.toast.hidden = false;
++    toastTimer = setTimeout(function () { els.toast.hidden = true; }, actionLabel ? 6000 : 3000);
++  }
++
++  /* ---------- markdown ---------- */
++  function safeUrl(u) { return /^(https?:\/\/|mailto:)/i.test(u); }
++
++  function inline(src) {
++    var codes = [];
++    var s = src.replace(/`([^`]+)`/g, function (m, c) { codes.push(c); return '\u0000' + (codes.length - 1) + '\u0000'; });
++    s = esc(s);
++    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (m, t, u) {
++      return safeUrl(u) ? '<a href="' + u + '" target="_blank" rel="noopener noreferrer">' + t + '</a>' : m;
++    });
++    s = s.replace(/(^|[\s(])(https?:\/\/[^\s<]*[^\s<.,;:!?)])/g, function (m, p, u) {
++      return p + '<a href="' + u + '" target="_blank" rel="noopener noreferrer">' + u + '</a>';
++    });
++    s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
++    s = s.replace(/(^|[^*\w])\*([^*\s](?:[^*]*[^*\s])?)\*(?!\*)/g, '$1<em>$2</em>');
++    s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
++    s = s.replace(/\u0000(\d+)\u0000/g, function (m, i) { return '<code>' + esc(codes[+i]) + '</code>'; });
++    return s;
++  }
++
++  var RE = {
++    fence: /^\s*```(.*)$/,
++    heading: /^(#{1,6})\s+(.*?)\s*#*\s*$/,
++    hr: /^\s*([-*_])(\s*\1){2,}\s*$/,
++    quote: /^\s*>\s?(.*)$/,
++    list: /^(\s*)([-*+]|\d+[.)])\s+(.*)$/,
++    tableSep: /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
++  };
++
++  function splitRow(l) {
++    l = l.trim().replace(/^\|/, '').replace(/\|$/, '');
++    return l.split('|').map(function (c) { return c.trim(); });
++  }
++
++  function renderBlocks(lines, base) {
++    var out = [], i = 0;
++    function startsBlock(l, next) {
++      return RE.fence.test(l) || RE.heading.test(l) || RE.hr.test(l) || RE.quote.test(l) || RE.list.test(l) ||
++        (l.indexOf('|') >= 0 && next !== undefined && RE.tableSep.test(next) && next.indexOf('-') >= 0);
++    }
++    while (i < lines.length) {
++      var line = lines[i], m;
++      if (!line.trim()) { i++; continue; }
++
++      if ((m = RE.fence.exec(line))) {
++        var code = [];
++        i++;
++        while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) code.push(lines[i++]);
++        i++;
++        out.push('<pre><code>' + esc(code.join('\n')) + '</code></pre>');
++        continue;
++      }
++      if ((m = RE.heading.exec(line))) {
++        out.push('<h' + m[1].length + '>' + inline(m[2]) + '</h' + m[1].length + '>');
++        i++; continue;
++      }
++      if (RE.hr.test(line)) { out.push('<hr>'); i++; continue; }
++
++      if (RE.quote.test(line)) {
++        var start = i, inner = [];
++        while (i < lines.length && RE.quote.test(lines[i])) inner.push(RE.quote.exec(lines[i++])[1]);
++        out.push('<blockquote>' + renderBlocks(inner, base + start) + '</blockquote>');
++        continue;
++      }
++      if (RE.list.test(line)) {
++        var items = [];
++        while (i < lines.length && (m = RE.list.exec(lines[i]))) {
++          items.push({ indent: m[1].replace(/\t/g, '    ').length, ordered: /\d/.test(m[2]), text: m[3], line: base + i });
++          i++;
++        }
++        out.push(renderList_(items));
++        continue;
++      }
++      if (line.indexOf('|') >= 0 && i + 1 < lines.length && RE.tableSep.test(lines[i + 1]) && lines[i + 1].indexOf('-') >= 0) {
++        var head = splitRow(line), rows = [];
++        i += 2;
++        while (i < lines.length && lines[i].trim() && lines[i].indexOf('|') >= 0) rows.push(splitRow(lines[i++]));
++        var t = '<table><thead><tr>' + head.map(function (c) { return '<th>' + inline(c) + '</th>'; }).join('') + '</tr></thead><tbody>';
++        rows.forEach(function (r) {
++          t += '<tr>' + head.map(function (_, k) { return '<td>' + inline(r[k] || '') + '</td>'; }).join('') + '</tr>';
++        });
++        out.push(t + '</tbody></table>');
++        continue;
++      }
++      var para = [];
++      while (i < lines.length && lines[i].trim() && !(para.length && startsBlock(lines[i], lines[i + 1]))) para.push(lines[i++]);
++      out.push('<p>' + para.map(inline).join('<br>') + '</p>');
++    }
++    return out.join('\n');
++  }
++
++  function renderList_(items) {
++    var html = '', stack = [];
++    items.forEach(function (it) {
++      var top = stack[stack.length - 1];
++      var tag = it.ordered ? 'ol' : 'ul';
++      if (!top || it.indent > top.indent) {
++        html += '<' + tag + '>';
++        stack.push({ indent: it.indent, tag: tag });
++      } else {
++        while (stack.length > 1 && it.indent < stack[stack.length - 1].indent) {
++          html += '</li></' + stack.pop().tag + '>';
++        }
++        html += '</li>';
++      }
++      var tm = /^\[( |x|X)\]\s+(.*)$/.exec(it.text);
++      if (tm) {
++        var done = tm[1] !== ' ';
++        html += '<li class="task' + (done ? ' done' : '') + '"><input type="checkbox" data-line="' + it.line + '"' +
++          (done ? ' checked' : '') + '>' + inline(tm[2]);
++      } else {
++        html += '<li>' + inline(it.text);
++      }
++    });
++    while (stack.length) html += '</li></' + stack.pop().tag + '>';
++    return html;
++  }
++
++  function renderMarkdown(md) {
++    return renderBlocks(md.replace(/\r\n?/g, '\n').split('\n'), 0);
++  }
++
++  /* ---------- derived data ---------- */
++  function noteTitle(n) {
++    if (n.title.trim()) return n.title.trim();
++    var first = n.body.split('\n').find(function (l) { return l.trim(); });
++    return first ? first.replace(/^[#>\-*\s\[\]xX]+/, '').slice(0, 80) || 'Untitled' : 'Untitled';
++  }
++  function snippet(n) {
++    return n.body.replace(/```[\s\S]*?```/g, ' ').replace(/[#>*_`~\[\]()-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 140);
++  }
++  function allTags() {
++    var counts = {};
++    state.notes.forEach(function (n) {
++      if (n.trashed) return;
++      n.tags.forEach(function (t) { counts[t] = (counts[t] || 0) + 1; });
++    });
++    return Object.keys(counts).sort().map(function (t) { return { tag: t, n: counts[t] }; });
++  }
++  function matches(n, terms) {
++    if (!terms.length) return true;
++    var hay = (n.title + '\n' + n.body).toLowerCase();
++    return terms.every(function (t) {
++      if (t.charAt(0) === '#' && t.length > 1) return n.tags.some(function (x) { return x.indexOf(t.slice(1)) === 0; });
++      return hay.indexOf(t) >= 0 || n.tags.some(function (x) { return x.indexOf(t) >= 0; });
++    });
++  }
++  function visibleNotes() {
++    var terms = state.query.toLowerCase().split(/\s+/).filter(Boolean);
++    var v = state.view;
++    var res = state.notes.filter(function (n) {
++      if (v === 'trash') { if (!n.trashed) return false; }
++      else {
++        if (n.trashed) return false;
++        if (v === 'pinned' && !n.pinned) return false;
++        if (v.indexOf('tag:') === 0 && n.tags.indexOf(v.slice(4)) < 0) return false;
++      }
++      return matches(n, terms);
++    });
++    var s = state.settings.sort;
++    res.sort(function (a, b) {
++      if (a.pinned !== b.pinned && v !== 'trash') return a.pinned ? -1 : 1;
++      if (s === 'title') return noteTitle(a).localeCompare(noteTitle(b), undefined, { sensitivity: 'base' });
++      return b[s === 'created' ? 'created' : 'updated'] - a[s === 'created' ? 'created' : 'updated'];
++    });
++    return res;
++  }
++
++  /* ---------- rendering ---------- */
++  function renderChips() {
++    var live = state.notes.filter(function (n) { return !n.trashed; });
++    var defs = [
++      { v: 'all', label: 'All (' + live.length + ')' },
++      { v: 'pinned', label: '★ Pinned (' + live.filter(function (n) { return n.pinned; }).length + ')' },
++      { v: 'trash', label: 'Trash (' + state.notes.filter(function (n) { return n.trashed; }).length + ')' }
++    ];
++    allTags().forEach(function (t) { defs.push({ v: 'tag:' + t.tag, label: '#' + t.tag + ' (' + t.n + ')' }); });
++    if (state.view.indexOf('tag:') === 0 && !defs.some(function (d) { return d.v === state.view; })) state.view = 'all';
++    els.chips.innerHTML = '';
++    defs.forEach(function (d) {
++      var b = document.createElement('button');
++      b.className = 'chip' + (d.v === state.view ? ' active' : '');
++      b.textContent = d.label;
++      b.onclick = function () { state.view = d.v; renderAll(); };
++      els.chips.appendChild(b);
++    });
++    els.trashBar.hidden = state.view !== 'trash';
++    els.emptyTrash.disabled = !state.notes.some(function (n) { return n.trashed; });
++    els.tagList.innerHTML = allTags().map(function (t) { return '<option value="' + esc(t.tag) + '">'; }).join('');
++  }
++
++  function renderList() {
++    var notes = visibleNotes();
++    els.list.innerHTML = '';
++    if (!notes.length) {
++      var li = document.createElement('li');
++      li.className = 'list-empty';
++      li.textContent = state.query ? 'No notes match your search.' :
++        state.view === 'trash' ? 'Trash is empty.' :
++        state.view === 'all' ? 'No notes yet. Click “+ New” to start.' : 'Nothing here yet.';
++      els.list.appendChild(li);
++    }
++    notes.forEach(function (n) {
++      var li = document.createElement('li');
++      li.setAttribute('role', 'option');
++      li.tabIndex = 0;
++      li.dataset.id = n.id;
++      if (n.id === state.currentId) { li.className = 'active'; li.setAttribute('aria-selected', 'true'); }
++      var meta = '<span>' + esc(fmtDate(n.updated)) + '</span>' +
++        n.tags.slice(0, 3).map(function (t) { return '<span class="t">#' + esc(t) + '</span>'; }).join('');
++      li.innerHTML = '<div class="li-title">' + (n.pinned ? '<span class="pin">★</span>' : '') + esc(noteTitle(n)) + '</div>' +
++        '<div class="li-snip">' + (esc(snippet(n)) || '&nbsp;') + '</div><div class="li-meta">' + meta + '</div>';
++      li.onclick = function () { openNote(n.id); };
++      li.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openNote(n.id); } };
++      els.list.appendChild(li);
++    });
++    var total = state.notes.filter(function (n) { return !n.trashed; }).length;
++    els.count.textContent = notes.length + (notes.length === 1 ? ' note' : ' notes') +
++      (notes.length !== total && state.view !== 'trash' ? ' of ' + total : '');
++  }
++
++  function renderTags(n) {
++    els.tags.innerHTML = '';
++    n.tags.forEach(function (t) {
++      var s = document.createElement('span');
++      s.className = 'tag';
++      s.appendChild(document.createTextNode('#' + t));
++      var x = document.createElement('button');
++      x.textContent = '×';
++      x.setAttribute('aria-label', 'Remove tag ' + t);
++      x.onclick = function () {
++        n.tags = n.tags.filter(function (y) { return y !== t; });
++        touch(n); renderTags(n); renderChips(); renderList();
++      };
++      s.appendChild(x);
++      els.tags.appendChild(s);
++    });
++  }
++
++  function updateStats() {
++    var n = byId(state.currentId);
++    if (!n) return;
++    var words = (n.body.trim().match(/\S+/g) || []).length;
++    els.stats.textContent = words + (words === 1 ? ' word' : ' words') + ' · ' + n.body.length + ' chars · created ' +
++      new Date(n.created).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
++  }
++
++  function renderPreview() {
++    var n = byId(state.currentId);
++    if (!n) return;
++    els.preview.innerHTML = n.body.trim() ? renderMarkdown(n.body) : '<p class="blank">Nothing to preview.</p>';
++  }
++
++  function applyMode() {
++    var m = state.settings.mode;
++    els.panes.className = 'panes mode-' + m;
++    els.toolbar.classList.toggle('off', m === 'preview');
++    document.querySelectorAll('.seg button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
++    if (m !== 'edit') renderPreview();
++  }
++
++  function renderEditor() {
++    var n = byId(state.currentId);
++    els.empty.hidden = !!n;
++    els.pane.hidden = !n;
++    if (!n) { document.body.classList.remove('show-editor'); return; }
++    if (els.title.value !== n.title) els.title.value = n.title;
++    if (els.body.value !== n.body) els.body.value = n.body;
++    var ro = n.trashed;
++    els.title.readOnly = ro; els.body.readOnly = ro; els.tagInput.hidden = ro;
++    els.trashBanner.hidden = !ro;
++    els.toolbar.style.pointerEvents = ro ? 'none' : '';
++    els.toolbar.style.opacity = ro ? '.5' : '';
++    els.delBtn.hidden = ro; els.pinBtn.hidden = ro;
++    els.pinBtn.textContent = n.pinned ? '★' : '☆';
++    els.pinBtn.title = n.pinned ? 'Unpin' : 'Pin';
++    renderTags(n);
++    updateStats();
++    applyMode();
++  }
++
++  function renderAll() {
++    var vis = visibleNotes();
++    if (state.currentId && !vis.some(function (n) { return n.id === state.currentId; }) && !byId(state.currentId)) state.currentId = null;
++    renderChips();
++    renderList();
++    renderEditor();
++  }
++
++  /* ---------- actions ---------- */
++  function touch(n) {
++    n.updated = Date.now();
++    els.saved.textContent = 'Saving…';
++    persistSoon();
++    updateStats();
++  }
++
++  function openNote(id, focus) {
++    flush();
++    state.currentId = id;
++    document.body.classList.add('show-editor');
++    renderList();
++    renderEditor();
++    var n = byId(id);
++    if (focus && n && !n.trashed && state.settings.mode !== 'preview') els.body.focus();
++  }
++
++  function newNote() {
++    flush();
++    if (state.view === 'trash') state.view = 'all';
++    state.query = ''; els.search.value = '';
++    var n = { id: uid(), title: '', body: '', tags: [], pinned: false, trashed: false, created: Date.now(), updated: Date.now() };
++    if (state.view.indexOf('tag:') === 0) n.tags.push(state.view.slice(4));
++    state.notes.unshift(n);
++    persist();
++    state.currentId = n.id;
++    document.body.classList.add('show-editor');
++    renderAll();
++    els.title.focus();
++  }
++
++  function trashNote(n) {
++    n.trashed = true; n.pinned = false; n.updated = Date.now();
++    persist();
++    var id = n.id;
++    selectNeighbor(id);
++    renderAll();
++    toast('Note moved to trash', 'Undo', function () {
++      var m = byId(id); if (m) { m.trashed = false; persist(); state.currentId = id; renderAll(); }
++    });
++  }
++  function selectNeighbor(id) {
++    var vis = visibleNotes(), i = -1;
++    vis.forEach(function (n, k) { if (n.id === id) i = k; });
++    var rest = vis.filter(function (n) { return n.id !== id; });
++    state.currentId = rest.length ? rest[Math.min(Math.max(i, 0), rest.length - 1)].id : null;
++    if (!state.currentId) document.body.classList.remove('show-editor');
++  }
++  function purge(n) {
++    if (!confirm('Permanently delete this note? This cannot be undone.')) return;
++    state.notes = state.notes.filter(function (x) { return x !== n; });
++    persist();
++    selectNeighbor(n.id);
++    renderAll();
++  }
++
++  var flush = function () { persistSoon.flush(); };
++
++  function download(name, text, type) {
++    var a = document.createElement('a');
++    var url = URL.createObjectURL(new Blob([text], { type: type || 'text/plain' }));
++    a.href = url; a.download = name;
++    document.body.appendChild(a); a.click(); a.remove();
++    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
++  }
++  function fileName(n) { return (noteTitle(n).replace(/[\\/:*?"<>|]+/g, '').trim() || 'note').slice(0, 60); }
++  function noteMd(n) {
++    return (n.title.trim() ? '# ' + n.title.trim() + '\n\n' : '') + n.body +
++      (n.tags.length ? '\n\n' + n.tags.map(function (t) { return '#' + t; }).join(' ') + '\n' : '\n');
++  }
++  function stamp() { return new Date().toISOString().slice(0, 10); }
++
++  function importJson(text) {
++    var data;
++    try { data = JSON.parse(text); } catch (e) { toast('That file is not valid JSON.'); return; }
++    var arr = Array.isArray(data) ? data : data && data.notes;
++    if (!Array.isArray(arr)) { toast('No notes found in that file.'); return; }
++    var added = 0, updated = 0;
++    arr.forEach(function (raw) {
++      var n = sanitizeNote(raw);
++      if (!n) return;
++      var ex = byId(n.id);
++      if (!ex) { state.notes.push(n); added++; }
++      else if (n.updated > ex.updated) { Object.assign(ex, n); updated++; }
++    });
++    persist();
++    renderAll();
++    toast('Imported ' + added + ' new, ' + updated + ' updated.');
++  }
++
++  /* ---------- formatting toolbar ---------- */
++  function wrap(before, after, placeholder) {
++    var ta = els.body, s = ta.selectionStart, e = ta.selectionEnd;
++    var sel = ta.value.slice(s, e) || placeholder;
++    ta.setRangeText(before + sel + after, s, e, 'end');
++    ta.setSelectionRange(s + before.length, s + before.length + sel.length);
++    ta.focus();
++    onBodyInput();
++  }
++  function prefixLines(prefix) {
++    var ta = els.body, v = ta.value;
++    var s = v.lastIndexOf('\n', ta.selectionStart - 1) + 1;
++    var e = ta.selectionEnd;
++    var chunk = v.slice(s, e).split('\n').map(function (l) { return prefix + l; }).join('\n');
++    ta.setRangeText(chunk, s, e, 'end');
++    ta.focus();
++    onBodyInput();
++  }
++  function format(kind) {
++    switch (kind) {
++      case 'b': wrap('**', '**', 'bold'); break;
++      case 'i': wrap('*', '*', 'italic'); break;
++      case 's': wrap('~~', '~~', 'text'); break;
++      case 'c':
++        var sel = els.body.value.slice(els.body.selectionStart, els.body.selectionEnd);
++        if (sel.indexOf('\n') >= 0) wrap('```\n', '\n```', ''); else wrap('`', '`', 'code');
++        break;
++      case 'l':
++        var ta = els.body, s = ta.selectionStart, e = ta.selectionEnd, t = ta.value.slice(s, e) || 'text';
++        ta.setRangeText('[' + t + '](https://)', s, e, 'end');
++        ta.setSelectionRange(s + t.length + 3, s + t.length + 11);
++        ta.focus(); onBodyInput();
++        break;
++      case 'h': prefixLines('## '); break;
++      case 'ul': prefixLines('- '); break;
++      case 'task': prefixLines('- [ ] '); break;
++      case 'q': prefixLines('> '); break;
++    }
++  }
++
++  function onBodyInput() {
++    var n = byId(state.currentId);
++    if (!n || n.trashed) return;
++    n.body = els.body.value;
++    touch(n);
++    renderListSoon();
++    if (state.settings.mode !== 'edit') renderPreviewSoon();
++  }
++  var renderPreviewSoon = debounce(renderPreview, 120);
++
++  /* Continue markdown lists on Enter */
++  function onBodyKey(e) {
++    var ta = els.body;
++    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
++      var k = e.key.toLowerCase();
++      if (k === 'b') { e.preventDefault(); format('b'); return; }
++      if (k === 'i') { e.preventDefault(); format('i'); return; }
++      if (k === 'l') { e.preventDefault(); format('l'); return; }
++    }
++    if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
++    if (ta.selectionStart !== ta.selectionEnd) return;
++    var pos = ta.selectionStart, v = ta.value;
++    var ls = v.lastIndexOf('\n', pos - 1) + 1;
++    var line = v.slice(ls, pos);
++    var m = /^(\s*)(?:([-*+])|(\d+)\.)\s+(\[[ xX]\]\s+)?/.exec(line);
++    if (!m) return;
++    e.preventDefault();
++    if (line.length === m[0].length) {            // empty item: end the list
++      ta.setRangeText('', ls, pos, 'end');
++    } else {
++      var marker = m[2] ? m[2] : (parseInt(m[3], 10) + 1) + '.';
++      ta.setRangeText('\n' + m[1] + marker + ' ' + (m[4] ? '[ ] ' : ''), pos, pos, 'end');
++    }
++    onBodyInput();
++  }
++
++  /* ---------- theme ---------- */
++  function applyTheme() {
++    var t = state.settings.theme;
++    document.documentElement.setAttribute('data-theme', t);
++    var icon = { auto: '◐', light: '☀', dark: '☾' }[t];
++    els.themeBtn.textContent = icon;
++    els.themeBtn.title = 'Theme: ' + t + ' (click to change)';
++  }
++
++  /* ---------- events ---------- */
++  els.newBtn.onclick = els.emptyNew.onclick = newNote;
++  els.title.addEventListener('input', function () {
++    var n = byId(state.currentId); if (!n || n.trashed) return;
++    n.title = els.title.value; touch(n); renderListSoon();
++  });
++  els.body.addEventListener('input', onBodyInput);
++  els.body.addEventListener('keydown', onBodyKey);
++  els.title.addEventListener('keydown', function (e) {
++    if (e.key === 'Enter') { e.preventDefault(); els.body.focus(); }
++  });
++  els.toolbar.addEventListener('mousedown', function (e) { e.preventDefault(); });
++  els.toolbar.addEventListener('click', function (e) {
++    var b = e.target.closest('button[data-fmt]');
++    if (b) format(b.dataset.fmt);
++  });
++  document.querySelectorAll('.seg button').forEach(function (b) {
++    b.onclick = function () { state.settings.mode = b.dataset.mode; persist(); applyMode(); };
++  });
++  els.preview.addEventListener('click', function (e) {
++    var cb = e.target;
++    if (!(cb instanceof HTMLInputElement) || cb.type !== 'checkbox') return;
++    var n = byId(state.currentId);
++    if (!n || n.trashed) { e.preventDefault(); return; }
++    var lines = n.body.split('\n'), idx = +cb.dataset.line;
++    if (lines[idx] === undefined) return;
++    lines[idx] = lines[idx].replace(/\[( |x|X)\]/, function (m, c) { return c === ' ' ? '[x]' : '[ ]'; });
++    n.body = lines.join('\n');
++    els.body.value = n.body;
++    touch(n); renderPreview(); renderListSoon();
++  });
++  els.tagInput.addEventListener('keydown', function (e) {
++    var n = byId(state.currentId);
++    if (!n) return;
++    if (e.key === 'Enter' || e.key === ',') {
++      e.preventDefault();
++      var t = normTag(els.tagInput.value.replace(/,/g, ''));
++      if (t && n.tags.indexOf(t) < 0) { n.tags.push(t); touch(n); renderTags(n); renderChips(); renderList(); }
++      els.tagInput.value = '';
++    } else if (e.key === 'Backspace' && !els.tagInput.value && n.tags.length) {
++      n.tags.pop(); touch(n); renderTags(n); renderChips(); renderList();
++    }
++  });
++  els.pinBtn.onclick = function () {
++    var n = byId(state.currentId); if (!n) return;
++    n.pinned = !n.pinned; persist(); renderChips(); renderList(); renderEditor();
++  };
++  els.delBtn.onclick = function () { var n = byId(state.currentId); if (n) trashNote(n); };
++  els.dlBtn.onclick = function () {
++    var n = byId(state.currentId); if (n) download(fileName(n) + '.md', noteMd(n), 'text/markdown');
++  };
++  els.restoreBtn.onclick = function () {
++    var n = byId(state.currentId); if (!n) return;
++    n.trashed = false; n.updated = Date.now(); persist(); state.view = 'all'; renderAll();
++  };
++  els.purgeBtn.onclick = function () { var n = byId(state.currentId); if (n) purge(n); };
++  els.emptyTrash.onclick = function () {
++    var c = state.notes.filter(function (n) { return n.trashed; }).length;
++    if (!c || !confirm('Permanently delete ' + c + ' note(s) in the trash?')) return;
++    state.notes = state.notes.filter(function (n) { return !n.trashed; });
++    var cur = byId(state.currentId); if (!cur) state.currentId = null;
++    persist(); renderAll();
++  };
++  els.backBtn.onclick = function () { flush(); document.body.classList.remove('show-editor'); };
++  els.search.addEventListener('input', function () { state.query = els.search.value; renderList(); });
++  els.search.addEventListener('keydown', function (e) {
++    if (e.key === 'Escape') { els.search.value = ''; state.query = ''; renderList(); els.search.blur(); }
++    if (e.key === 'Enter') { var f = visibleNotes()[0]; if (f) openNote(f.id, true); }
++  });
++  els.sort.onchange = function () { state.settings.sort = els.sort.value; persist(); renderList(); };
++  els.themeBtn.onclick = function () {
++    var order = ['auto', 'light', 'dark'];
++    state.settings.theme = order[(order.indexOf(state.settings.theme) + 1) % 3];
++    persist(); applyTheme();
++  };
++  els.menuBtn.onclick = function (e) { e.stopPropagation(); els.menu.hidden = !els.menu.hidden; };
++  document.addEventListener('click', function (e) {
++    if (!els.menu.hidden && !els.menu.contains(e.target)) els.menu.hidden = true;
++  });
++  els.exportAll.onclick = function () {
++    els.menu.hidden = true;
++    download('notes-backup-' + stamp() + '.json', JSON.stringify({ app: 'notes', version: 1, exported: Date.now(), notes: state.notes }, null, 2), 'application/json');
++  };
++  els.exportMd.onclick = function () {
++    els.menu.hidden = true;
++    var txt = state.notes.filter(function (n) { return !n.trashed; }).map(function (n) {
++      return '# ' + noteTitle(n) + '\n\n' + n.body + (n.tags.length ? '\n\n' + n.tags.map(function (t) { return '#' + t; }).join(' ') : '');
++    }).join('\n\n---\n\n');
++    download('notes-' + stamp() + '.md', txt, 'text/markdown');
++  };
++  els.importBtn.onclick = function () { els.menu.hidden = true; els.importFile.click(); };
++  els.importFile.onchange = function () {
++    var f = els.importFile.files[0];
++    if (!f) return;
++    var r = new FileReader();
++    r.onload = function () { importJson(String(r.result)); };
++    r.readAsText(f);
++    els.importFile.value = '';
++  };
++  els.helpBtn.onclick = function () { if (els.help.showModal) els.help.showModal(); };
++
++  document.addEventListener('keydown', function (e) {
++    var mod = e.ctrlKey || e.metaKey;
++    var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
++    if (e.key === 'Escape' && !els.menu.hidden) { els.menu.hidden = true; return; }
++    if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); document.body.classList.remove('show-editor'); els.search.focus(); els.search.select(); }
++    else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); flush(); persist(); toast('Saved'); }
++    else if (e.altKey && e.code === 'KeyN') { e.preventDefault(); newNote(); }
++    else if (e.altKey && e.code === 'KeyP') {
++      e.preventDefault();
++      var m = ['edit', 'split', 'preview'];
++      state.settings.mode = m[(m.indexOf(state.settings.mode) + 1) % 3];
++      persist(); applyMode();
++    }
++    else if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
++      e.preventDefault();
++      var vis = visibleNotes(), i = -1;
++      vis.forEach(function (n, k) { if (n.id === state.currentId) i = k; });
++      var j = e.key === 'ArrowDown' ? i + 1 : i - 1;
++      if (vis[j]) openNote(vis[j].id);
++    }
++    else if (e.key === '/' && !typing && !mod) { e.preventDefault(); els.search.focus(); }
++  });
++
++  window.addEventListener('beforeunload', flush);
++  document.addEventListener('visibilitychange', function () { if (document.hidden) flush(); });
++  window.addEventListener('storage', function (e) {      // keep multiple tabs in sync
++    if (e.key !== KEY) return;
++    load();
++    if (state.currentId && !byId(state.currentId)) state.currentId = null;
++    renderAll();
++  });
++
++  /* ---------- init ---------- */
++  load();
++  els.sort.value = state.settings.sort;
++  applyTheme();
++  if (!state.notes.length) {
++    var now = Date.now();
++    state.notes.push({
++      id: uid(), title: 'Welcome to Notes', pinned: true, trashed: false, tags: ['welcome'], created: now, updated: now,
++      body: 'Your notes live in this browser and save automatically.\n\n' +
++        '## Quick tips\n\n- Write in **Markdown**: *italic*, `code`, [links](https://example.com)\n' +
++        '- Press `Alt+N` for a new note, `Ctrl/⌘+K` to search\n- Add `#tags` below the note and filter by them\n' +
++        '- Deleted notes go to the Trash first\n- Use **⋯ → Export** regularly to keep a backup\n\n' +
++        '## Checklist\n\n- [ ] Try a checklist item (switch to View and click me)\n- [x] Read this note\n'
++    });
++    persist();
++  }
++  var first = visibleNotes()[0];
++  if (first && window.matchMedia('(min-width: 761px)').matches) state.currentId = first.id;
++  renderAll();
++})();
+diff --git a/notes/index.html b/notes/index.html
+new file mode 100644
+index 0000000..b6f6438
+--- /dev/null
++++ b/notes/index.html
+@@ -0,0 +1,113 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Notes</title>
++<link rel="stylesheet" href="styles.css">
++<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234f6df5'/%3E%3Cpath d='M9 10h14M9 16h14M9 22h8' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
++</head>
++<body>
++<div id="app">
++  <aside id="sidebar">
++    <header class="side-head">
++      <h1>Notes</h1>
++      <div class="side-actions">
++        <button id="themeBtn" class="icon-btn" title="Theme: auto" aria-label="Switch theme">◐</button>
++        <button id="menuBtn" class="icon-btn" title="Export / import" aria-label="Data menu">⋯</button>
++        <button id="newBtn" class="primary" title="New note (Alt+N)">+ New</button>
++      </div>
++    </header>
++    <div class="search-row">
++      <input id="search" type="search" placeholder="Search notes…  (Ctrl/⌘+K)" autocomplete="off" aria-label="Search notes">
++      <select id="sort" aria-label="Sort notes">
++        <option value="updated">Recently edited</option>
++        <option value="created">Recently created</option>
++        <option value="title">Title A–Z</option>
++      </select>
++    </div>
++    <nav id="chips" aria-label="Filters"></nav>
++    <div id="trashBar" hidden>
++      <span>Trash items are kept until you empty it.</span>
++      <button id="emptyTrash" class="danger small">Empty trash</button>
++    </div>
++    <ul id="list" role="listbox" aria-label="Notes"></ul>
++    <footer class="side-foot"><span id="count"></span><button id="helpBtn" class="link">Shortcuts</button></footer>
++  </aside>
++
++  <main id="editor">
++    <div id="empty" class="empty">
++      <p>No note selected.</p>
++      <button id="emptyNew" class="primary">Create a note</button>
++    </div>
++    <div id="pane" hidden>
++      <div class="ed-head">
++        <button id="backBtn" class="icon-btn back" aria-label="Back to list">←</button>
++        <input id="title" placeholder="Title" aria-label="Note title" maxlength="200">
++        <div class="ed-actions">
++          <div class="seg" role="group" aria-label="View mode">
++            <button data-mode="edit" title="Edit">Edit</button>
++            <button data-mode="split" title="Side by side">Split</button>
++            <button data-mode="preview" title="Preview">View</button>
++          </div>
++          <button id="pinBtn" class="icon-btn" title="Pin" aria-label="Pin note">☆</button>
++          <button id="dlBtn" class="icon-btn" title="Download as Markdown" aria-label="Download note">⭳</button>
++          <button id="delBtn" class="icon-btn" title="Move to trash" aria-label="Delete note">🗑</button>
++        </div>
++      </div>
++      <div id="trashBanner" hidden>
++        <span>This note is in the trash.</span>
++        <button id="restoreBtn" class="small">Restore</button>
++        <button id="purgeBtn" class="danger small">Delete forever</button>
++      </div>
++      <div class="toolbar" id="toolbar">
++        <button data-fmt="h" title="Heading">H</button>
++        <button data-fmt="b" title="Bold (Ctrl/⌘+B)"><b>B</b></button>
++        <button data-fmt="i" title="Italic (Ctrl/⌘+I)"><i>I</i></button>
++        <button data-fmt="s" title="Strikethrough"><s>S</s></button>
++        <button data-fmt="c" title="Code">&lt;/&gt;</button>
++        <button data-fmt="l" title="Link (Ctrl/⌘+L)">Link</button>
++        <button data-fmt="ul" title="Bullet list">• List</button>
++        <button data-fmt="task" title="Checklist">☑ Task</button>
++        <button data-fmt="q" title="Quote">❝</button>
++      </div>
++      <div id="panes" class="panes mode-edit">
++        <textarea id="body" placeholder="Write in Markdown…" spellcheck="true" aria-label="Note body"></textarea>
++        <div id="preview" class="preview"></div>
++      </div>
++      <div class="tag-row">
++        <div id="tags"></div>
++        <input id="tagInput" list="tagList" placeholder="Add tag…" maxlength="40" aria-label="Add tag">
++        <datalist id="tagList"></datalist>
++      </div>
++      <div class="status-row"><span id="stats"></span><span id="saved"></span></div>
++    </div>
++  </main>
++</div>
++
++<div id="menu" class="popmenu" hidden>
++  <button id="exportAll">Export all notes (JSON)</button>
++  <button id="exportMd">Export all as one Markdown file</button>
++  <button id="importBtn">Import JSON…</button>
++</div>
++<input id="importFile" type="file" accept="application/json,.json" hidden>
++
++<dialog id="help">
++  <h2>Keyboard shortcuts</h2>
++  <table>
++    <tr><td><kbd>Alt</kbd>+<kbd>N</kbd></td><td>New note</td></tr>
++    <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd></td><td>Search</td></tr>
++    <tr><td><kbd>Alt</kbd>+<kbd>P</kbd></td><td>Cycle Edit / Split / View</td></tr>
++    <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>B</kbd> / <kbd>I</kbd> / <kbd>L</kbd></td><td>Bold / italic / link</td></tr>
++    <tr><td><kbd>Alt</kbd>+<kbd>↑</kbd> / <kbd>↓</kbd></td><td>Previous / next note</td></tr>
++    <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>S</kbd></td><td>Save now (also automatic)</td></tr>
++    <tr><td><kbd>Esc</kbd></td><td>Clear search / close menus</td></tr>
++  </table>
++  <p class="muted">Search supports several words and <code>#tag</code> terms. Notes are stored only in this browser — use Export for backups.</p>
++  <form method="dialog"><button class="primary">Close</button></form>
++</dialog>
++
++<div id="toast" role="status" aria-live="polite" hidden></div>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/notes/styles.css b/notes/styles.css
+new file mode 100644
+index 0000000..faf4b2c
+--- /dev/null
++++ b/notes/styles.css
+@@ -0,0 +1,145 @@
++:root {
++  --bg: #ffffff; --bg2: #f5f6f8; --bg3: #e9ebef; --fg: #1c1e24; --muted: #6b7280;
++  --border: #dcdfe5; --accent: #4f6df5; --accent-fg: #fff; --danger: #d6342c;
++  --sel: #e8edff; --code: #f0f1f4; --radius: 8px;
++  color-scheme: light;
++}
++:root[data-theme="dark"] {
++  --bg: #17181c; --bg2: #1e2025; --bg3: #2a2d34; --fg: #e6e8ec; --muted: #9096a3;
++  --border: #33363f; --accent: #7b92ff; --accent-fg: #0d0f14; --danger: #ff6b62;
++  --sel: #272d4a; --code: #262932;
++  color-scheme: dark;
++}
++@media (prefers-color-scheme: dark) {
++  :root[data-theme="auto"] {
++    --bg: #17181c; --bg2: #1e2025; --bg3: #2a2d34; --fg: #e6e8ec; --muted: #9096a3;
++    --border: #33363f; --accent: #7b92ff; --accent-fg: #0d0f14; --danger: #ff6b62;
++    --sel: #272d4a; --code: #262932;
++    color-scheme: dark;
++  }
++}
++* { box-sizing: border-box; }
++html, body { height: 100%; margin: 0; }
++body {
++  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
++  background: var(--bg); color: var(--fg);
++}
++button, input, select, textarea { font: inherit; color: inherit; }
++button { cursor: pointer; border: 1px solid var(--border); background: var(--bg); border-radius: var(--radius); padding: 5px 10px; }
++button:hover { background: var(--bg3); }
++button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, li:focus-visible {
++  outline: 2px solid var(--accent); outline-offset: 1px;
++}
++button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
++button.primary:hover { filter: brightness(1.08); background: var(--accent); }
++button.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
++button.small { padding: 2px 8px; font-size: 13px; }
++button.link { border: 0; background: none; color: var(--muted); padding: 0; text-decoration: underline; }
++.icon-btn { border-color: transparent; background: transparent; padding: 4px 8px; font-size: 16px; line-height: 1.2; }
++[hidden] { display: none !important; }
++
++#app { display: flex; height: 100%; }
++#sidebar { width: 320px; min-width: 260px; border-right: 1px solid var(--border); background: var(--bg2); display: flex; flex-direction: column; }
++.side-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 8px; }
++.side-head h1 { font-size: 18px; margin: 0; }
++.side-actions { display: flex; gap: 4px; align-items: center; }
++.search-row { padding: 0 12px; display: flex; flex-direction: column; gap: 6px; }
++#search, #sort { width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); }
++#sort { padding: 4px 8px; font-size: 13px; color: var(--muted); }
++#chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px 6px; max-height: 120px; overflow: auto; }
++.chip { border-radius: 999px; padding: 2px 10px; font-size: 13px; background: var(--bg); }
++.chip.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
++#trashBar { margin: 4px 12px; padding: 6px 8px; font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; justify-content: space-between; }
++#list { list-style: none; margin: 0; padding: 4px 8px; overflow: auto; flex: 1; }
++#list li { padding: 9px 10px; border-radius: var(--radius); cursor: pointer; border: 1px solid transparent; }
++#list li:hover { background: var(--bg3); }
++#list li.active { background: var(--sel); border-color: var(--accent); }
++.li-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.li-title .pin { color: var(--accent); margin-right: 4px; }
++.li-snip { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.li-meta { color: var(--muted); font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
++.li-meta .t { color: var(--accent); }
++.list-empty { color: var(--muted); text-align: center; padding: 30px 10px; cursor: default; }
++.side-foot { display: flex; justify-content: space-between; padding: 8px 12px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); }
++
++#editor { flex: 1; min-width: 0; display: flex; flex-direction: column; }
++.empty { margin: auto; text-align: center; color: var(--muted); }
++#pane { display: flex; flex-direction: column; height: 100%; }
++.ed-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
++#title { flex: 1; min-width: 0; border: 0; background: transparent; font-size: 22px; font-weight: 700; padding: 4px 0; }
++#title:focus { outline: none; }
++.ed-actions { display: flex; gap: 2px; align-items: center; }
++.seg { display: inline-flex; margin-right: 6px; }
++.seg button { border-radius: 0; padding: 3px 9px; font-size: 13px; margin-left: -1px; }
++.seg button:first-child { border-radius: var(--radius) 0 0 var(--radius); margin-left: 0; }
++.seg button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
++.seg button.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
++.back { display: none; }
++#trashBanner { background: var(--bg3); padding: 8px 16px; display: flex; gap: 10px; align-items: center; font-size: 14px; }
++.toolbar { display: flex; gap: 4px; padding: 6px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
++.toolbar button { padding: 2px 9px; font-size: 13px; min-width: 32px; }
++.toolbar.off { display: none; }
++.panes { flex: 1; min-height: 0; display: flex; }
++.panes > * { flex: 1; min-width: 0; overflow: auto; }
++.panes.mode-edit #preview, .panes.mode-preview #body { display: none; }
++#body { border: 0; resize: none; padding: 16px; background: var(--bg); line-height: 1.6;
++  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; }
++#body:focus { outline: none; }
++.panes.mode-split #body { border-right: 1px solid var(--border); }
++.preview { padding: 16px 24px; }
++.preview > :first-child { margin-top: 0; }
++.preview h1, .preview h2, .preview h3 { line-height: 1.25; margin: 1.2em 0 .5em; }
++.preview h1 { font-size: 1.7em; border-bottom: 1px solid var(--border); padding-bottom: .2em; }
++.preview h2 { font-size: 1.4em; } .preview h3 { font-size: 1.2em; }
++.preview p { margin: .6em 0; }
++.preview code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: .9em; font-family: ui-monospace, Menlo, Consolas, monospace; }
++.preview pre { background: var(--code); padding: 12px; border-radius: var(--radius); overflow: auto; }
++.preview pre code { background: none; padding: 0; }
++.preview blockquote { margin: .6em 0; padding: 0 14px; border-left: 3px solid var(--accent); color: var(--muted); }
++.preview a { color: var(--accent); }
++.preview hr { border: 0; border-top: 1px solid var(--border); margin: 1.2em 0; }
++.preview ul, .preview ol { padding-left: 1.6em; margin: .4em 0; }
++.preview li.task { list-style: none; margin-left: -1.3em; }
++.preview li.task input { margin-right: 6px; cursor: pointer; }
++.preview li.done { color: var(--muted); text-decoration: line-through; }
++.preview table { border-collapse: collapse; margin: .8em 0; }
++.preview th, .preview td { border: 1px solid var(--border); padding: 4px 10px; }
++.preview th { background: var(--bg2); }
++.preview .blank { color: var(--muted); font-style: italic; }
++.tag-row { display: flex; gap: 8px; align-items: center; padding: 8px 16px; border-top: 1px solid var(--border); flex-wrap: wrap; }
++#tags { display: flex; gap: 6px; flex-wrap: wrap; }
++.tag { background: var(--bg3); border-radius: 999px; padding: 1px 4px 1px 10px; font-size: 13px; display: inline-flex; align-items: center; gap: 2px; }
++.tag button { border: 0; background: none; padding: 0 5px; color: var(--muted); }
++#tagInput { border: 0; background: transparent; min-width: 100px; padding: 3px 0; }
++#tagInput:focus { outline: none; }
++.status-row { display: flex; justify-content: space-between; padding: 4px 16px 8px; font-size: 12px; color: var(--muted); }
++.muted { color: var(--muted); }
++
++.popmenu { position: fixed; z-index: 20; top: 50px; left: 150px; background: var(--bg); border: 1px solid var(--border);
++  border-radius: var(--radius); box-shadow: 0 6px 24px rgba(0,0,0,.2); padding: 4px; display: flex; flex-direction: column; }
++.popmenu button { border: 0; text-align: left; background: none; }
++.popmenu button:hover { background: var(--bg3); }
++dialog { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 12px; max-width: 460px; }
++dialog td { padding: 3px 12px 3px 0; }
++kbd { background: var(--bg3); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
++#toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg);
++  padding: 8px 14px; border-radius: var(--radius); z-index: 30; display: flex; gap: 12px; align-items: center; max-width: 90vw; }
++#toast button { background: transparent; border-color: currentColor; color: inherit; padding: 1px 8px; }
++
++@media (max-width: 760px) {
++  #sidebar { width: 100%; border-right: 0; }
++  #editor { display: none; }
++  body.show-editor #sidebar { display: none; }
++  body.show-editor #editor { display: flex; }
++  .back { display: inline-block; }
++  .panes.mode-split #body { display: none; }
++  .panes.mode-split #preview { display: block; }
++  .seg button[data-mode="split"] { display: none; }
++  .ed-head { flex-wrap: wrap; padding: 8px 10px; }
++  #title { font-size: 18px; flex-basis: 40%; }
++  .popmenu { left: 20px; }
++}
++@media print {
++  #sidebar, .ed-head, .toolbar, .tag-row, .status-row { display: none; }
++  .panes #body { display: none; } .panes #preview { display: block; }
++}

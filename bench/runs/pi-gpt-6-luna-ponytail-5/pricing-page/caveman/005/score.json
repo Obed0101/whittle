@@ -1,0 +1,27 @@
+{
+  "task": "pricing-page",
+  "arm": "caveman",
+  "run": "005",
+  "checks": 26,
+  "passed": 25,
+  "missed": [
+    "test_b09_price_change_is_announced"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 33,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 36.0,
+    "tokens": {
+      "input": 10857,
+      "output": 3992,
+      "cacheRead": 3072,
+      "cost": 0.003112
+    },
+    "turns": 4,
+    "tool_calls": 3
+  }
+}

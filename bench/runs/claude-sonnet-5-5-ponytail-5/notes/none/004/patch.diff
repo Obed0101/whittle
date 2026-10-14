@@ -1,0 +1,838 @@
+diff --git a/notes/app.js b/notes/app.js
+new file mode 100644
+index 0000000..9aec52f
+--- /dev/null
++++ b/notes/app.js
+@@ -0,0 +1,600 @@
++(function () {
++'use strict';
++
++var KEY = 'notes-app:v1';
++var SETTINGS_KEY = 'notes-app:settings';
++var TRASH_DAYS = 30;
++var $ = function (id) { return document.getElementById(id); };
++
++var notes = [];
++var settings = { view: 'all', sort: 'updated', mode: 'split', theme: 'auto', selected: null };
++var query = '';
++var saveTimer = null;
++var storageOk = true;
++
++/* ---------- storage ---------- */
++function load() {
++  try { notes = JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { notes = []; }
++  try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}); } catch (e) {}
++  if (!Array.isArray(notes)) notes = [];
++}
++function persist() {
++  clearTimeout(saveTimer); saveTimer = null;
++  try {
++    localStorage.setItem(KEY, JSON.stringify(notes));
++    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
++    storageOk = true;
++    $('saved').textContent = 'Saved';
++  } catch (e) {
++    storageOk = false;
++    $('saved').textContent = 'Could not save! Export your notes.';
++    toast('Storage is unavailable or full. Export your notes to avoid losing them.');
++  }
++}
++function scheduleSave() {
++  $('saved').textContent = 'Saving…';
++  clearTimeout(saveTimer);
++  saveTimer = setTimeout(persist, 300);
++}
++function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
++function byId(id) { for (var i = 0; i < notes.length; i++) if (notes[i].id === id) return notes[i]; return null; }
++function current() { return settings.selected ? byId(settings.selected) : null; }
++
++/* ---------- helpers ---------- */
++function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
++function noteTitle(n) { return n.title.trim() || firstLine(n.body) || 'Untitled'; }
++function firstLine(b) { var m = b.split('\n').filter(function (l) { return l.trim(); })[0]; return m ? m.replace(/^[#>\-*\s\[\]x]+/, '').slice(0, 80) : ''; }
++function words(s) { var m = s.trim().match(/\S+/g); return m ? m.length : 0; }
++function fmtDate(t) {
++  var d = new Date(t), now = new Date();
++  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
++  var o = { month: 'short', day: 'numeric' };
++  if (d.getFullYear() !== now.getFullYear()) o.year = 'numeric';
++  return d.toLocaleDateString([], o);
++}
++var toastTimer;
++function toast(msg, actionLabel, action) {
++  var t = $('toast');
++  t.innerHTML = '';
++  var s = document.createElement('span'); s.textContent = msg; t.appendChild(s);
++  if (actionLabel) {
++    var b = document.createElement('button'); b.textContent = actionLabel;
++    b.onclick = function () { t.hidden = true; action(); };
++    t.appendChild(b);
++  }
++  t.hidden = false;
++  clearTimeout(toastTimer);
++  toastTimer = setTimeout(function () { t.hidden = true; }, actionLabel ? 6000 : 3500);
++}
++function normTag(s) { return s.trim().replace(/^#+/, '').replace(/\s+/g, '-').toLowerCase().slice(0, 30); }
++
++/* ---------- markdown ---------- */
++function inline(src) {
++  var codes = [];
++  var s = src.replace(/`([^`]+)`/g, function (_, c) { codes.push(c); return '\u0000' + (codes.length - 1) + '\u0000'; });
++  s = esc(s);
++  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (m, t, u) {
++    u = u.replace(/&amp;/g, '&');
++    if (!/^(https?:|mailto:|#|\/|\.)/i.test(u)) return m;
++    return '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + t + '</a>';
++  });
++  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
++  s = s.replace(/\*\*([^*]+)\*\*|__([^_]+)__/g, function (_, a, b) { return '<strong>' + (a || b) + '</strong>'; });
++  s = s.replace(/(^|[^*\w])\*([^*\s][^*]*)\*(?!\*)/g, '$1<em>$2</em>');
++  s = s.replace(/(^|[^_\w])_([^_\s][^_]*)_(?![_\w])/g, '$1<em>$2</em>');
++  s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
++  s = s.replace(/\u0000(\d+)\u0000/g, function (_, i) { return '<code>' + esc(codes[+i]) + '</code>'; });
++  return s;
++}
++function renderMarkdown(src) {
++  var lines = src.replace(/\r\n?/g, '\n').split('\n');
++  var out = [], i = 0;
++  function isBlockStart(l) {
++    return /^(#{1,6})\s/.test(l) || /^```/.test(l) || /^\s*([-*+]|\d+\.)\s/.test(l) || /^>\s?/.test(l) || /^(-{3,}|\*{3,}|_{3,})\s*$/.test(l);
++  }
++  while (i < lines.length) {
++    var l = lines[i], m;
++    if (/^```/.test(l)) {
++      var buf = []; i++;
++      while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
++      i++;
++      out.push('<pre><code>' + esc(buf.join('\n')) + '</code></pre>');
++    } else if ((m = /^(#{1,6})\s+(.*)$/.exec(l))) {
++      out.push('<h' + m[1].length + '>' + inline(m[2]) + '</h' + m[1].length + '>'); i++;
++    } else if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(l)) {
++      out.push('<hr>'); i++;
++    } else if (/^>\s?/.test(l)) {
++      var q = [];
++      while (i < lines.length && /^>\s?/.test(lines[i])) q.push(lines[i++].replace(/^>\s?/, ''));
++      out.push('<blockquote>' + renderMarkdown(q.join('\n')) + '</blockquote>');
++    } else if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(lines[i + 1])) {
++      var cells = function (r) { return r.trim().replace(/^\||\|$/g, '').split('|').map(function (c) { return c.trim(); }); };
++      var h = cells(l), t = '<table><thead><tr>' + h.map(function (c) { return '<th>' + inline(c) + '</th>'; }).join('') + '</tr></thead><tbody>';
++      i += 2;
++      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
++        t += '<tr>' + cells(lines[i++]).map(function (c) { return '<td>' + inline(c) + '</td>'; }).join('') + '</tr>';
++      }
++      out.push(t + '</tbody></table>');
++    } else if (/^\s*([-*+]|\d+\.)\s/.test(l)) {
++      var ordered = /^\s*\d+\./.test(l), items = '', hasTask = false;
++      while (i < lines.length && /^\s*([-*+]|\d+\.)\s/.test(lines[i])) {
++        var im = /^(\s*)(?:[-*+]|\d+\.)\s+(.*)$/.exec(lines[i]);
++        var depth = Math.min(4, Math.floor(im[1].replace(/\t/g, '  ').length / 2));
++        var tm = /^\[( |x|X)\]\s+(.*)$/.exec(im[2]);
++        var st = depth ? ' style="margin-left:' + depth * 1.4 + 'em"' : '';
++        if (tm) {
++          hasTask = true;
++          var done = tm[1] !== ' ';
++          items += '<li class="task' + (done ? ' done' : '') + '"' + st + '><input type="checkbox" data-line="' + i + '"' + (done ? ' checked' : '') + '>' + inline(tm[2]) + '</li>';
++        } else items += '<li' + st + '>' + inline(im[2]) + '</li>';
++        i++;
++      }
++      var tag = ordered ? 'ol' : 'ul';
++      out.push('<' + tag + (hasTask ? ' class="tasks"' : '') + '>' + items + '</' + tag + '>');
++    } else if (!l.trim()) {
++      i++;
++    } else {
++      var p = [];
++      while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i])) p.push(lines[i++]);
++      if (!p.length) { p.push(lines[i++]); }
++      out.push('<p>' + p.map(inline).join('<br>') + '</p>');
++    }
++  }
++  return out.join('\n');
++}
++
++/* ---------- filtering ---------- */
++function matches(n) {
++  var v = settings.view;
++  if (v === 'trash') { if (!n.trashed) return false; }
++  else {
++    if (n.trashed) return false;
++    if (v === 'archive') { if (!n.archived) return false; }
++    else {
++      if (n.archived && !query) return false;
++      if (v === 'pinned' && !n.pinned) return false;
++      if (v.indexOf('tag:') === 0 && n.tags.indexOf(v.slice(4)) < 0) return false;
++    }
++  }
++  if (query) {
++    var hay = (n.title + '\n' + n.body + '\n' + n.tags.join(' ')).toLowerCase();
++    var terms = query.toLowerCase().split(/\s+/).filter(Boolean);
++    for (var i = 0; i < terms.length; i++) {
++      var t = terms[i];
++      if (t.charAt(0) === '#' && t.length > 1) { if (n.tags.indexOf(t.slice(1)) < 0) return false; }
++      else if (hay.indexOf(t) < 0) return false;
++    }
++  }
++  return true;
++}
++function sorted(list) {
++  var s = settings.sort;
++  return list.slice().sort(function (a, b) {
++    if (a.pinned !== b.pinned && settings.view !== 'trash') return a.pinned ? -1 : 1;
++    if (s === 'title') return noteTitle(a).localeCompare(noteTitle(b));
++    return b[s] - a[s];
++  });
++}
++
++/* ---------- rendering ---------- */
++function highlight(text) {
++  var h = esc(text);
++  if (!query) return h;
++  query.split(/\s+/).filter(function (t) { return t && t.charAt(0) !== '#'; }).forEach(function (t) {
++    var re = new RegExp('(' + esc(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
++    h = h.replace(re, function (m, g, off, str) {
++      // do not break entities / tags
++      var before = str.lastIndexOf('&', off), semi = str.lastIndexOf(';', off);
++      return before > semi ? m : '<mark>' + g + '</mark>';
++    });
++  });
++  return h;
++}
++function snippet(n) {
++  var b = n.body.replace(/[#>*`\-\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
++  if (query) {
++    var t = query.split(/\s+/).filter(function (x) { return x && x.charAt(0) !== '#'; })[0];
++    if (t) {
++      var idx = b.toLowerCase().indexOf(t.toLowerCase());
++      if (idx > 40) b = '…' + b.slice(idx - 30);
++    }
++  }
++  return b.slice(0, 160);
++}
++function renderViews() {
++  var live = notes.filter(function (n) { return !n.trashed; });
++  var counts = {
++    all: live.filter(function (n) { return !n.archived; }).length,
++    pinned: live.filter(function (n) { return n.pinned && !n.archived; }).length,
++    archive: live.filter(function (n) { return n.archived; }).length,
++    trash: notes.length - live.length
++  };
++  var defs = [['all', 'All notes'], ['pinned', 'Pinned'], ['archive', 'Archive'], ['trash', 'Trash']];
++  $('views').innerHTML = defs.map(function (d) {
++    return '<button data-view="' + d[0] + '" class="' + (settings.view === d[0] ? 'active' : '') + '"><span>' + d[1] + '</span><span class="n">' + counts[d[0]] + '</span></button>';
++  }).join('');
++  var tc = {};
++  live.forEach(function (n) { n.tags.forEach(function (t) { tc[t] = (tc[t] || 0) + 1; }); });
++  var names = Object.keys(tc).sort();
++  $('tagList').innerHTML = names.length ? names.map(function (t) {
++    return '<button data-view="tag:' + esc(t) + '" class="' + (settings.view === 'tag:' + t ? 'active' : '') + '"><span>#' + esc(t) + '</span><span class="n">' + tc[t] + '</span></button>';
++  }).join('') : '<div class="list-empty" style="padding:8px 9px;text-align:left">No tags yet</div>';
++  $('tagSuggest').innerHTML = names.map(function (t) { return '<option value="' + esc(t) + '">'; }).join('');
++}
++function viewTitle() {
++  var v = settings.view;
++  if (query) return 'Search';
++  return { all: 'All notes', pinned: 'Pinned', archive: 'Archive', trash: 'Trash' }[v] || '#' + v.slice(4);
++}
++function renderList() {
++  var list = sorted(notes.filter(matches));
++  $('listTitle').textContent = viewTitle();
++  $('listCount').textContent = list.length + (list.length === 1 ? ' note' : ' notes');
++  $('emptyTrash').hidden = !(settings.view === 'trash' && list.length);
++  if (!list.length) {
++    var msg = query ? 'No notes match your search.' : settings.view === 'trash' ? 'Trash is empty.' : settings.view === 'all' ? 'No notes yet. Create your first one!' : 'Nothing here.';
++    $('noteList').innerHTML = '<li class="list-empty" style="cursor:default">' + msg + '</li>';
++    return;
++  }
++  $('noteList').innerHTML = list.map(function (n) {
++    return '<li data-id="' + n.id + '" class="' + (n.id === settings.selected ? 'active' : '') + '">' +
++      '<div class="t">' + (n.pinned ? '📌 ' : '') + highlight(noteTitle(n)) + '</div>' +
++      '<div class="s">' + highlight(snippet(n)) + '</div>' +
++      '<div class="m"><span>' + fmtDate(n.updated) + '</span>' +
++      n.tags.slice(0, 3).map(function (t) { return '<span class="tg">#' + esc(t) + '</span>'; }).join('') + '</div></li>';
++  }).join('');
++}
++function renderPreview() {
++  var n = current();
++  if (!n) return;
++  $('preview').innerHTML = n.body.trim() ? renderMarkdown(n.body) : '<p style="color:var(--muted)">Nothing to preview yet.</p>';
++}
++function renderStats() {
++  var n = current();
++  if (!n) return;
++  $('stats').textContent = words(n.body) + ' words · ' + n.body.length + ' chars · edited ' + new Date(n.updated).toLocaleString();
++}
++function renderChips() {
++  var n = current();
++  $('chips').innerHTML = n.tags.map(function (t) {
++    return '<span class="chip">#' + esc(t) + '<button data-rm="' + esc(t) + '" title="Remove tag">×</button></span>';
++  }).join('');
++  $('tagInput').disabled = n.trashed;
++}
++function renderEditor(focus) {
++  var n = current();
++  $('emptyState').hidden = !!n;
++  $('editor').hidden = !n;
++  $('app').classList.toggle('show-editor', !!n && $('app').classList.contains('show-editor'));
++  if (!n) return;
++  $('title').value = n.title;
++  $('body').value = n.body;
++  $('title').readOnly = $('body').readOnly = n.trashed;
++  $('pinBtn').classList.toggle('on', n.pinned);
++  $('archiveBtn').classList.toggle('on', n.archived);
++  $('archiveBtn').title = n.archived ? 'Unarchive' : 'Archive';
++  $('pinBtn').hidden = $('archiveBtn').hidden = $('trashBtn').hidden = n.trashed;
++  $('restoreBtn').hidden = $('purgeBtn').hidden = !n.trashed;
++  renderChips(); renderPreview(); renderStats();
++  if (focus && !n.trashed) (n.title || n.body ? $('body') : $('title')).focus();
++}
++function renderMode() {
++  var m = settings.mode;
++  $('panes').className = 'panes m-' + m;
++  Array.prototype.forEach.call($('modeSeg').children, function (b) { b.classList.toggle('on', b.dataset.mode === m); });
++  $('toolbar').hidden = m === 'preview';
++}
++function applyTheme() {
++  var r = document.documentElement;
++  if (settings.theme === 'auto') r.removeAttribute('data-theme'); else r.setAttribute('data-theme', settings.theme);
++  $('themeBtn').textContent = 'Theme: ' + settings.theme;
++}
++function renderAll() { renderViews(); renderList(); }
++
++/* ---------- actions ---------- */
++function select(id, focus) {
++  settings.selected = id;
++  renderList(); renderEditor(focus);
++  if (id) $('app').classList.add('show-editor');
++  $('app').classList.remove('show-sidebar');
++  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
++}
++function newNote(body) {
++  var now = Date.now();
++  var n = { id: uid(), title: '', body: body || '', tags: [], pinned: false, archived: false, trashed: false, created: now, updated: now, trashedAt: null };
++  if (settings.view.indexOf('tag:') === 0) n.tags.push(settings.view.slice(4));
++  if (settings.view === 'pinned') n.pinned = true;
++  notes.push(n);
++  if (settings.view === 'trash' || settings.view === 'archive') settings.view = 'all';
++  query = ''; $('search').value = '';
++  persist(); renderAll(); select(n.id, true);
++  return n;
++}
++function touch(n) { n.updated = Date.now(); scheduleSave(); }
++function trash(n) {
++  n.trashed = true; n.trashedAt = Date.now(); n.pinned = false;
++  persist();
++  if (settings.selected === n.id) { var nx = sorted(notes.filter(matches))[0]; settings.selected = nx ? nx.id : null; }
++  renderAll(); renderEditor();
++  $('app').classList.remove('show-editor');
++  toast('Moved to trash', 'Undo', function () { restore(n); });
++}
++function restore(n) {
++  n.trashed = false; n.trashedAt = null; n.updated = Date.now();
++  persist(); renderAll();
++  if (settings.view === 'trash') { settings.selected = null; renderEditor(); } else select(n.id);
++}
++function purge(n) {
++  notes = notes.filter(function (x) { return x !== n; });
++  if (settings.selected === n.id) settings.selected = null;
++  persist(); renderAll(); renderEditor();
++  $('app').classList.remove('show-editor');
++}
++function download(name, text, type) {
++  var a = document.createElement('a');
++  a.href = URL.createObjectURL(new Blob([text], { type: type }));
++  a.download = name; document.body.appendChild(a); a.click();
++  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
++}
++function importFiles(files) {
++  var added = 0, pending = files.length;
++  function done() {
++    if (--pending) return;
++    persist(); renderAll();
++    toast('Imported ' + added + ' note' + (added === 1 ? '' : 's'));
++  }
++  Array.prototype.forEach.call(files, function (f) {
++    var r = new FileReader();
++    r.onload = function () {
++      try {
++        if (/\.json$/i.test(f.name)) {
++          var data = JSON.parse(r.result);
++          var arr = Array.isArray(data) ? data : data.notes;
++          arr.forEach(function (x) {
++            if (!x || typeof x !== 'object') return;
++            var now = Date.now();
++            var id = typeof x.id === 'string' ? x.id : uid();
++            var ex = byId(id);
++            var n = {
++              id: ex && ex.updated >= (+x.updated || 0) ? uid() : id,
++              title: String(x.title || ''), body: String(x.body || ''),
++              tags: (Array.isArray(x.tags) ? x.tags : []).map(function (t) { return normTag(String(t)); }).filter(Boolean),
++              pinned: !!x.pinned, archived: !!x.archived, trashed: !!x.trashed,
++              created: +x.created || now, updated: +x.updated || now, trashedAt: x.trashed ? (+x.trashedAt || now) : null
++            };
++            if (ex && n.id === id) notes[notes.indexOf(ex)] = n; else notes.push(n);
++            added++;
++          });
++        } else {
++          var now2 = Date.now();
++          notes.push({ id: uid(), title: f.name.replace(/\.(md|txt)$/i, ''), body: String(r.result), tags: [], pinned: false, archived: false, trashed: false, created: now2, updated: now2, trashedAt: null });
++          added++;
++        }
++      } catch (e) { toast('Could not import ' + f.name); }
++      done();
++    };
++    r.onerror = function () { toast('Could not read ' + f.name); done(); };
++    r.readAsText(f);
++  });
++}
++
++/* ---------- editor formatting ---------- */
++function wrapSel(before, after, ph) {
++  var ta = $('body'), s = ta.selectionStart, e = ta.selectionEnd;
++  var sel = ta.value.slice(s, e) || ph;
++  ta.setRangeText(before + sel + after, s, e, 'end');
++  ta.setSelectionRange(s + before.length, s + before.length + sel.length);
++  ta.focus(); onBodyInput();
++}
++function prefixLines(prefix) {
++  var ta = $('body'), v = ta.value;
++  var s = v.lastIndexOf('\n', ta.selectionStart - 1) + 1;
++  var e = v.indexOf('\n', ta.selectionEnd); if (e < 0) e = v.length;
++  var block = v.slice(s, e).split('\n').map(function (l) { return prefix + l; }).join('\n');
++  ta.setRangeText(block, s, e, 'select');
++  ta.focus(); onBodyInput();
++}
++function format(f) {
++  if (current() && current().trashed) return;
++  switch (f) {
++    case 'bold': wrapSel('**', '**', 'bold'); break;
++    case 'italic': wrapSel('*', '*', 'italic'); break;
++    case 'strike': wrapSel('~~', '~~', 'text'); break;
++    case 'code': wrapSel('`', '`', 'code'); break;
++    case 'h': prefixLines('## '); break;
++    case 'ul': prefixLines('- '); break;
++    case 'task': prefixLines('- [ ] '); break;
++    case 'quote': prefixLines('> '); break;
++    case 'link':
++      var ta = $('body'), sel = ta.value.slice(ta.selectionStart, ta.selectionEnd);
++      if (/^https?:\/\//.test(sel)) wrapSel('[link](', ')', sel); else wrapSel('[', '](https://)', 'text');
++  }
++}
++
++/* ---------- events ---------- */
++function onBodyInput() {
++  var n = current(); if (!n || n.trashed) return;
++  n.body = $('body').value;
++  touch(n); renderPreview(); renderStats(); renderList(); renderViews();
++}
++
++function bind() {
++  $('newBtn').onclick = $('newBtn2').onclick = function () { newNote(); };
++  $('search').oninput = function () { query = this.value.trim(); renderList(); };
++  $('search').onkeydown = function (e) {
++    if (e.key === 'Escape') { this.value = ''; query = ''; renderList(); this.blur(); }
++    if (e.key === 'Enter') { var f = sorted(notes.filter(matches))[0]; if (f) select(f.id); }
++  };
++  $('views').onclick = $('tagList').onclick = function (e) {
++    var b = e.target.closest('[data-view]'); if (!b) return;
++    settings.view = b.dataset.view;
++    var vis = sorted(notes.filter(matches));
++    if (!vis.some(function (n) { return n.id === settings.selected; })) settings.selected = null;
++    $('app').classList.remove('show-sidebar');
++    renderAll(); renderEditor(); persist();
++  };
++  $('sort').onchange = function () { settings.sort = this.value; persist(); renderList(); };
++  $('noteList').onclick = function (e) {
++    var li = e.target.closest('li[data-id]'); if (li) select(li.dataset.id);
++  };
++  $('title').oninput = function () {
++    var n = current(); if (!n || n.trashed) return;
++    n.title = this.value; touch(n); renderList();
++  };
++  $('title').onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); $('body').focus(); } };
++  $('body').oninput = onBodyInput;
++  $('body').onkeydown = function (e) {
++    var ta = this, v = ta.value, s = ta.selectionStart;
++    if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
++      e.preventDefault(); document.execCommand('insertText', false, '  ');
++      if (ta.value === v) { ta.setRangeText('  ', s, ta.selectionEnd, 'end'); onBodyInput(); }
++    } else if (e.key === 'Enter' && !e.shiftKey && s === ta.selectionEnd) {
++      var ls = v.lastIndexOf('\n', s - 1) + 1, line = v.slice(ls, s);
++      var m = /^(\s*)([-*+]|\d+\.)(\s+)(\[[ xX]\]\s+)?/.exec(line);
++      if (m) {
++        e.preventDefault();
++        if (line.length === m[0].length) { ta.setRangeText('', ls, s, 'end'); }
++        else {
++          var mk = /\d/.test(m[2]) ? (parseInt(m[2], 10) + 1) + '.' : m[2];
++          ta.setRangeText('\n' + m[1] + mk + m[3] + (m[4] ? '[ ] ' : ''), s, s, 'end');
++        }
++        onBodyInput();
++      }
++    }
++  };
++  $('toolbar').onclick = function (e) { var b = e.target.closest('[data-fmt]'); if (b) format(b.dataset.fmt); };
++  $('preview').onchange = function (e) {
++    var cb = e.target; if (cb.type !== 'checkbox') return;
++    var n = current(); if (!n || n.trashed) { cb.checked = !cb.checked; return; }
++    var lines = n.body.split('\n'), i = +cb.dataset.line;
++    lines[i] = lines[i].replace(/\[( |x|X)\]/, cb.checked ? '[x]' : '[ ]');
++    n.body = lines.join('\n'); $('body').value = n.body;
++    touch(n); renderPreview(); renderList();
++  };
++  $('modeSeg').onclick = function (e) {
++    var b = e.target.closest('[data-mode]'); if (!b) return;
++    settings.mode = b.dataset.mode; renderMode(); persist();
++  };
++  $('pinBtn').onclick = function () { var n = current(); n.pinned = !n.pinned; persist(); renderAll(); renderEditor(); };
++  $('archiveBtn').onclick = function () {
++    var n = current(); n.archived = !n.archived; n.pinned = n.archived ? false : n.pinned; persist();
++    if (n.archived && settings.view !== 'archive' && !query) { settings.selected = null; $('app').classList.remove('show-editor'); }
++    renderAll(); renderEditor();
++    toast(n.archived ? 'Archived' : 'Unarchived');
++  };
++  $('trashBtn').onclick = function () { trash(current()); };
++  $('restoreBtn').onclick = function () { restore(current()); };
++  $('purgeBtn').onclick = function () {
++    if (confirm('Delete this note forever? This cannot be undone.')) purge(current());
++  };
++  $('emptyTrash').onclick = function () {
++    var c = notes.filter(function (n) { return n.trashed; }).length;
++    if (c && confirm('Permanently delete ' + c + ' note(s) in trash?')) {
++      notes = notes.filter(function (n) { return !n.trashed; });
++      settings.selected = null; persist(); renderAll(); renderEditor();
++    }
++  };
++  $('tagInput').onkeydown = function (e) {
++    var n = current();
++    if ((e.key === 'Enter' || e.key === ',') && n) {
++      e.preventDefault();
++      var t = normTag(this.value);
++      if (t && n.tags.indexOf(t) < 0) { n.tags.push(t); touch(n); renderChips(); renderAll(); }
++      this.value = '';
++    } else if (e.key === 'Backspace' && !this.value && n && n.tags.length) {
++      n.tags.pop(); touch(n); renderChips(); renderAll();
++    }
++  };
++  $('tagInput').onchange = function () {
++    var n = current(), t = normTag(this.value);
++    if (n && t && n.tags.indexOf(t) < 0) { n.tags.push(t); touch(n); renderChips(); renderAll(); }
++    this.value = '';
++  };
++  $('chips').onclick = function (e) {
++    var b = e.target.closest('[data-rm]'), n = current(); if (!b || !n || n.trashed) return;
++    n.tags = n.tags.filter(function (t) { return t !== b.dataset.rm; });
++    touch(n); renderChips(); renderAll();
++  };
++  /* mobile */
++  $('toSidebar').onclick = function () { $('app').classList.add('show-sidebar'); };
++  $('backBtn').onclick = function () { $('app').classList.remove('show-editor'); };
++  $('listPane').addEventListener('click', function () { $('app').classList.remove('show-sidebar'); });
++  /* menu */
++  $('menuBtn').onclick = function (e) { e.stopPropagation(); $('menu').hidden = !$('menu').hidden; };
++  document.addEventListener('click', function (e) { if (!$('menu').contains(e.target)) $('menu').hidden = true; });
++  $('exportJson').onclick = function () {
++    download('notes-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify({ version: 1, notes: notes }, null, 2), 'application/json');
++    $('menu').hidden = true;
++  };
++  $('exportMd').onclick = function () {
++    var n = current(); $('menu').hidden = true;
++    if (!n) return toast('Select a note first');
++    var head = n.tags.length ? n.tags.map(function (t) { return '#' + t; }).join(' ') + '\n\n' : '';
++    download(noteTitle(n).replace(/[\\/:*?"<>|]+/g, '_') + '.md', head + n.body, 'text/markdown');
++  };
++  $('importBtn').onclick = function () { $('importFile').click(); $('menu').hidden = true; };
++  $('importFile').onchange = function () { if (this.files.length) importFiles(this.files); this.value = ''; };
++  $('themeBtn').onclick = function () {
++    var order = ['auto', 'light', 'dark'];
++    settings.theme = order[(order.indexOf(settings.theme) + 1) % 3];
++    applyTheme(); persist();
++  };
++  /* keyboard */
++  document.addEventListener('keydown', function (e) {
++    var mod = e.ctrlKey || e.metaKey;
++    if (!mod) return;
++    var inBody = document.activeElement === $('body');
++    if (e.code === 'KeyK' && !e.shiftKey) { e.preventDefault(); $('search').focus(); $('search').select(); }
++    else if (e.code === 'KeyN' && e.altKey) { e.preventDefault(); newNote(); }
++    else if (e.code === 'KeyS') { e.preventDefault(); persist(); toast('Saved'); }
++    else if (e.code === 'Slash') {
++      e.preventDefault();
++      var o = ['edit', 'split', 'preview'];
++      settings.mode = o[(o.indexOf(settings.mode) + 1) % 3]; renderMode(); persist();
++    }
++    else if (inBody && e.code === 'KeyB') { e.preventDefault(); format('bold'); }
++    else if (inBody && e.code === 'KeyI') { e.preventDefault(); format('italic'); }
++    else if (inBody && e.code === 'KeyK' && e.shiftKey) { e.preventDefault(); format('link'); }
++  });
++  /* cross-tab sync */
++  window.addEventListener('storage', function (e) {
++    if (e.key !== KEY) return;
++    try { notes = JSON.parse(e.newValue) || []; } catch (x) { return; }
++    if (settings.selected && !byId(settings.selected)) settings.selected = null;
++    renderAll();
++    var n = current();
++    if (n && document.activeElement !== $('body') && document.activeElement !== $('title')) renderEditor();
++  });
++  window.addEventListener('beforeunload', function () { if (saveTimer) persist(); });
++  document.addEventListener('visibilitychange', function () { if (document.hidden && saveTimer) persist(); });
++}
++
++/* ---------- init ---------- */
++function init() {
++  load();
++  var now = Date.now(), cutoff = now - TRASH_DAYS * 864e5;
++  notes = notes.filter(function (n) { return !(n.trashed && n.trashedAt && n.trashedAt < cutoff); });
++  notes.forEach(function (n) {
++    n.title = n.title || ''; n.body = n.body || ''; n.tags = n.tags || [];
++    n.created = n.created || now; n.updated = n.updated || n.created;
++  });
++  if (!notes.length && !localStorage.getItem(KEY)) {
++    notes.push({
++      id: uid(), title: 'Welcome to Notes', pinned: true, archived: false, trashed: false, trashedAt: null,
++      created: now, updated: now, tags: ['welcome'],
++      body: '# Welcome\n\nYour notes are saved automatically in this browser.\n\n## Tips\n\n- [x] Write in **Markdown**: `#` headings, *italic*, **bold**, `code`, [links](https://example.com)\n- [ ] Click a checkbox in the preview to tick it\n- [ ] Add tags above, then filter by them in the sidebar\n- [ ] Search with words or `#tag`\n\n> Ctrl/Cmd+K search · Ctrl/Cmd+Alt+N new note · Ctrl/Cmd+/ switch edit/preview\n\nUse the ⚙ menu to export a JSON backup — do this regularly, since browser data can be cleared.'
++    });
++  }
++  if (!byId(settings.selected)) settings.selected = null;
++  if (['all', 'pinned', 'archive', 'trash'].indexOf(settings.view) < 0 && settings.view.indexOf('tag:') !== 0) settings.view = 'all';
++  $('sort').value = settings.sort;
++  bind(); applyTheme(); renderMode(); renderAll(); renderEditor();
++  persist();
++  $('saved').textContent = '';
++  if (!settings.selected && window.innerWidth > 900) {
++    var f = sorted(notes.filter(matches))[0];
++    if (f) { settings.selected = f.id; renderList(); renderEditor(); }
++  }
++}
++init();
++})();
+diff --git a/notes/index.html b/notes/index.html
+new file mode 100644
+index 0000000..24e602d
+--- /dev/null
++++ b/notes/index.html
+@@ -0,0 +1,103 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Notes</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<div class="app" id="app">
++  <aside class="sidebar" id="sidebar">
++    <div class="side-top">
++      <div class="brand">Notes</div>
++      <button class="btn primary" id="newBtn" title="New note (Ctrl/Cmd+Alt+N)">+ New</button>
++    </div>
++    <div class="search-wrap">
++      <input type="search" id="search" placeholder="Search notes…  (Ctrl/Cmd+K)" autocomplete="off">
++    </div>
++    <nav class="views" id="views"></nav>
++    <div class="tags-head">Tags</div>
++    <div class="tags" id="tagList"></div>
++    <div class="side-bottom">
++      <select id="sort" title="Sort notes">
++        <option value="updated">Recently edited</option>
++        <option value="created">Recently created</option>
++        <option value="title">Title A–Z</option>
++      </select>
++      <button class="btn" id="menuBtn" title="Settings, import and export">⚙</button>
++    </div>
++  </aside>
++
++  <section class="list-pane" id="listPane">
++    <div class="list-head">
++      <button class="btn icon mobile-only" id="toSidebar" title="Menu">☰</button>
++      <span id="listTitle">All notes</span>
++      <span class="count" id="listCount"></span>
++      <button class="btn small" id="emptyTrash" hidden>Empty trash</button>
++    </div>
++    <ul class="note-list" id="noteList"></ul>
++  </section>
++
++  <main class="editor-pane" id="editorPane">
++    <div class="empty" id="emptyState">
++      <h2>No note selected</h2>
++      <p>Pick a note from the list or create a new one.</p>
++      <button class="btn primary" id="newBtn2">+ New note</button>
++    </div>
++    <div class="editor" id="editor" hidden>
++      <div class="ed-bar">
++        <button class="btn icon mobile-only" id="backBtn" title="Back to list">←</button>
++        <input type="text" id="title" placeholder="Title" spellcheck="true">
++        <div class="ed-actions">
++          <div class="seg" id="modeSeg">
++            <button data-mode="edit" title="Edit">Edit</button>
++            <button data-mode="split" title="Split view">Split</button>
++            <button data-mode="preview" title="Preview">View</button>
++          </div>
++          <button class="btn icon" id="pinBtn" title="Pin">📌</button>
++          <button class="btn icon" id="archiveBtn" title="Archive">🗄</button>
++          <button class="btn icon" id="trashBtn" title="Move to trash">🗑</button>
++          <button class="btn" id="restoreBtn" hidden>Restore</button>
++          <button class="btn danger" id="purgeBtn" hidden>Delete forever</button>
++        </div>
++      </div>
++      <div class="tag-bar">
++        <div class="chips" id="chips"></div>
++        <input type="text" id="tagInput" placeholder="Add tag…" list="tagSuggest" autocomplete="off">
++        <datalist id="tagSuggest"></datalist>
++      </div>
++      <div class="toolbar" id="toolbar">
++        <button data-fmt="bold" title="Bold (Ctrl/Cmd+B)"><b>B</b></button>
++        <button data-fmt="italic" title="Italic (Ctrl/Cmd+I)"><i>I</i></button>
++        <button data-fmt="strike" title="Strikethrough"><s>S</s></button>
++        <button data-fmt="code" title="Code">&lt;/&gt;</button>
++        <button data-fmt="h" title="Heading">H</button>
++        <button data-fmt="ul" title="Bullet list">• List</button>
++        <button data-fmt="task" title="Checklist">☑ Task</button>
++        <button data-fmt="quote" title="Quote">❝</button>
++        <button data-fmt="link" title="Link (Ctrl/Cmd+Shift+K)">Link</button>
++      </div>
++      <div class="panes" id="panes">
++        <textarea id="body" placeholder="Start writing… Markdown is supported." spellcheck="true"></textarea>
++        <div class="preview" id="preview"></div>
++      </div>
++      <div class="statusbar">
++        <span id="stats"></span>
++        <span id="saved"></span>
++      </div>
++    </div>
++  </main>
++</div>
++
++<div class="menu" id="menu" hidden>
++  <button id="exportJson">Export all notes (JSON)</button>
++  <button id="exportMd">Export current note (.md)</button>
++  <button id="importBtn">Import notes (JSON or .md)…</button>
++  <button id="themeBtn">Theme: auto</button>
++  <input type="file" id="importFile" accept=".json,.md,.txt,application/json,text/markdown,text/plain" multiple hidden>
++</div>
++<div class="toast" id="toast" hidden></div>
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/notes/style.css b/notes/style.css
+new file mode 100644
+index 0000000..220c4a0
+--- /dev/null
++++ b/notes/style.css
+@@ -0,0 +1,117 @@
++:root{
++  --bg:#ffffff;--bg2:#f6f7f9;--bg3:#eceef2;--fg:#1c2026;--muted:#6b7280;--line:#e1e4ea;
++  --accent:#3b6df0;--accent-fg:#fff;--danger:#d93a3a;--sel:#e6edff;--code:#f1f3f6;
++}
++:root[data-theme=dark]{
++  --bg:#16181d;--bg2:#1c1f26;--bg3:#262a33;--fg:#e6e8ec;--muted:#8d95a3;--line:#2c313b;
++  --accent:#6f95ff;--accent-fg:#0b1020;--danger:#ff6b6b;--sel:#242c44;--code:#242830;
++}
++@media (prefers-color-scheme:dark){
++  :root:not([data-theme=light]){
++    --bg:#16181d;--bg2:#1c1f26;--bg3:#262a33;--fg:#e6e8ec;--muted:#8d95a3;--line:#2c313b;
++    --accent:#6f95ff;--accent-fg:#0b1020;--danger:#ff6b6b;--sel:#242c44;--code:#242830;
++  }
++}
++*{box-sizing:border-box}
++html,body{height:100%;margin:0}
++body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg)}
++button,input,select,textarea{font:inherit;color:inherit}
++button{cursor:pointer}
++[hidden]{display:none!important}
++.app{display:grid;grid-template-columns:220px 300px 1fr;height:100%}
++.sidebar{background:var(--bg2);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;padding:12px;gap:10px}
++.side-top{display:flex;align-items:center;justify-content:space-between}
++.brand{font-weight:700;font-size:17px}
++.btn{background:var(--bg3);border:1px solid var(--line);border-radius:6px;padding:5px 10px}
++.btn:hover{border-color:var(--muted)}
++.btn.primary{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);font-weight:600}
++.btn.danger{color:var(--danger);border-color:var(--danger);background:transparent}
++.btn.icon{padding:4px 8px}
++.btn.small{padding:2px 8px;font-size:12px}
++.btn.on{background:var(--sel);border-color:var(--accent)}
++input[type=search],input[type=text],select{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 9px;outline:none}
++input:focus,select:focus,textarea:focus{border-color:var(--accent)}
++.views{display:flex;flex-direction:column;gap:2px}
++.views button,.tags button{display:flex;justify-content:space-between;gap:8px;text-align:left;background:none;border:0;border-radius:6px;padding:6px 9px;width:100%}
++.views button:hover,.tags button:hover{background:var(--bg3)}
++.views button.active,.tags button.active{background:var(--sel);color:var(--accent);font-weight:600}
++.views .n,.tags .n{color:var(--muted);font-size:12px;font-weight:400}
++.tags-head{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:0 9px}
++.tags{flex:1;overflow:auto;min-height:0}
++.side-bottom{display:flex;gap:6px}
++.list-pane{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;min-width:0}
++.list-head{display:flex;align-items:center;gap:8px;padding:12px;border-bottom:1px solid var(--line);font-weight:600}
++.list-head .count{color:var(--muted);font-weight:400;font-size:13px;flex:1}
++.note-list{list-style:none;margin:0;padding:0;overflow:auto;flex:1}
++.note-list li{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
++.note-list li:hover{background:var(--bg2)}
++.note-list li.active{background:var(--sel)}
++.note-list .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.note-list .s{color:var(--muted);font-size:13px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
++.note-list .m{color:var(--muted);font-size:12px;margin-top:3px;display:flex;gap:8px;flex-wrap:wrap}
++.note-list .tg{color:var(--accent)}
++.note-list mark,.preview mark{background:#ffe27a;color:#222;border-radius:2px}
++.list-empty{padding:30px 16px;color:var(--muted);text-align:center}
++.editor-pane{min-width:0;min-height:0;display:flex}
++.empty{margin:auto;text-align:center;color:var(--muted)}
++.editor{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
++.ed-bar{display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
++#title{font-size:20px;font-weight:700;border:0;background:none;padding:4px 0}
++.ed-actions{display:flex;gap:6px;align-items:center;flex-shrink:0}
++.seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
++.seg button{background:none;border:0;padding:4px 10px;font-size:13px}
++.seg button.on{background:var(--accent);color:var(--accent-fg)}
++.tag-bar{display:flex;gap:6px;align-items:center;padding:6px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
++.chips{display:flex;gap:6px;flex-wrap:wrap}
++.chip{background:var(--bg3);border-radius:12px;padding:1px 4px 1px 10px;font-size:13px;display:inline-flex;gap:4px;align-items:center}
++.chip button{background:none;border:0;color:var(--muted);padding:0 5px;font-size:15px;line-height:1}
++.tag-bar input{width:140px;border:0;background:none;padding:3px}
++.toolbar{display:flex;gap:2px;padding:4px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
++.toolbar button{background:none;border:0;border-radius:4px;padding:3px 9px;font-size:13px;color:var(--muted)}
++.toolbar button:hover{background:var(--bg3);color:var(--fg)}
++.panes{flex:1;display:flex;min-height:0}
++#body{flex:1;min-width:0;resize:none;border:0;outline:none;padding:18px 22px;background:var(--bg);font:14.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
++.preview{flex:1;min-width:0;overflow:auto;padding:18px 26px;word-wrap:break-word}
++.panes.m-edit .preview,.panes.m-preview #body{display:none}
++.panes.m-split .preview{border-left:1px solid var(--line)}
++.m-edit ~ .x,.editor.nomd .toolbar{display:none}
++.statusbar{display:flex;justify-content:space-between;padding:4px 14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
++.preview h1,.preview h2,.preview h3,.preview h4{margin:1.1em 0 .4em;line-height:1.25}
++.preview h1{font-size:1.7em;border-bottom:1px solid var(--line);padding-bottom:.2em}
++.preview h2{font-size:1.4em}.preview h3{font-size:1.15em}.preview h4{font-size:1em}
++.preview p{margin:.6em 0}
++.preview code{background:var(--code);padding:1px 5px;border-radius:4px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.9em}
++.preview pre{background:var(--code);padding:12px;border-radius:6px;overflow:auto}
++.preview pre code{padding:0;background:none}
++.preview blockquote{margin:.6em 0;padding:2px 14px;border-left:3px solid var(--accent);color:var(--muted)}
++.preview ul,.preview ol{padding-left:1.6em;margin:.5em 0}
++.preview ul.tasks{list-style:none;padding-left:.4em}
++.preview li.task input{margin-right:8px}
++.preview li.done{color:var(--muted);text-decoration:line-through}
++.preview a{color:var(--accent)}
++.preview hr{border:0;border-top:1px solid var(--line);margin:1.2em 0}
++.preview table{border-collapse:collapse;margin:.6em 0}
++.preview th,.preview td{border:1px solid var(--line);padding:4px 10px}
++.preview th{background:var(--bg2)}
++.menu{position:fixed;left:14px;bottom:56px;background:var(--bg);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.2);padding:4px;z-index:20;display:flex;flex-direction:column;min-width:240px}
++.menu button{background:none;border:0;text-align:left;padding:8px 10px;border-radius:5px}
++.menu button:hover{background:var(--bg3)}
++.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;z-index:30;display:flex;gap:12px;align-items:center}
++.toast button{background:none;border:0;color:var(--accent);font-weight:700;padding:0}
++.mobile-only{display:none}
++@media (max-width:900px){
++  .app{grid-template-columns:1fr;position:relative}
++  .mobile-only{display:inline-block}
++  .sidebar,.list-pane,.editor-pane{position:absolute;inset:0;background:var(--bg)}
++  .sidebar{background:var(--bg2);z-index:3;transform:translateX(-100%);transition:transform .15s}
++  .app.show-sidebar .sidebar{transform:none}
++  .editor-pane{z-index:2;transform:translateX(100%);transition:transform .15s}
++  .app.show-editor .editor-pane{transform:none}
++  .ed-bar{flex-wrap:wrap}
++  .panes.m-split{flex-direction:column}
++  .panes.m-split .preview{border-left:0;border-top:1px solid var(--line)}
++}
++@media print{
++  .sidebar,.list-pane,.ed-bar,.tag-bar,.toolbar,.statusbar{display:none!important}
++  .app{display:block}.panes #body{display:none}.preview{display:block!important;overflow:visible}
++}

@@ -1,0 +1,42 @@
+{
+  "task": "expense-report",
+  "arm": "terse",
+  "run": "008",
+  "checks": 32,
+  "passed": 16,
+  "missed": [
+    "test_r01_table_header_columns_in_order",
+    "test_r02_dashes_under_header",
+    "test_r03_sorted_by_date_keeping_file_order_on_ties",
+    "test_r04_amounts_two_decimals_thousands_right_aligned",
+    "test_r05_long_note_cut_to_23_chars_and_ellipsis",
+    "test_r06_total_line",
+    "test_r08_category_filter_ignores_case_and_repeats",
+    "test_r09_from_is_inclusive",
+    "test_r10_to_is_inclusive",
+    "test_r11_min_amount_is_inclusive",
+    "test_r21_currency_symbol_only_in_table",
+    "test_r26_invalid_amount_rows_skipped_with_plural_warning",
+    "test_r27_top_n_largest_first",
+    "test_r28_refunds_in_parentheses_still_subtract",
+    "test_r29_no_header",
+    "test_r30_group_names_title_cased_in_table_only"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 160,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 27.9,
+    "tokens": {
+      "input": 12717,
+      "output": 2357,
+      "cacheRead": 3072,
+      "cost": 0.002481
+    },
+    "turns": 5,
+    "tool_calls": 5
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "task": "kanban",
+  "arm": "none",
+  "run": "002",
+  "checks": 40,
+  "passed": 35,
+  "missed": [
+    "test_k20_works_on_phones",
+    "test_k23_motion_with_reduced_motion_respected",
+    "test_k31_reorder_columns",
+    "test_k38_sort_cards",
+    "test_k40_reset_or_clear_board"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 524,
+  "agent": {
+    "harness": "claude",
+    "model": "claude-sonnet-5-5",
+    "exit": 0,
+    "seconds": 76.4,
+    "tokens": {
+      "input": 16895,
+      "output": 13771,
+      "cacheRead": 36771,
+      "cost": 0.208959
+    },
+    "turns": 2
+  }
+}

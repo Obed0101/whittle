@@ -1,0 +1,826 @@
+diff --git a/notes/app.js b/notes/app.js
+new file mode 100644
+index 0000000..227fcae
+--- /dev/null
++++ b/notes/app.js
+@@ -0,0 +1,565 @@
++(() => {
++'use strict';
++
++const KEY = 'notes.v1', SETTINGS_KEY = 'notes.settings.v1';
++const TRASH_DAYS = 30;
++const $ = id => document.getElementById(id);
++const el = {
++  app: $('app'), nav: $('nav'), tags: $('tags'), list: $('list'), listTitle: $('list-title'),
++  search: $('search'), sort: $('sort'), editor: $('editor'), empty: $('empty'), title: $('title'),
++  body: $('body'), preview: $('preview'), panes: $('panes'), tagBox: $('tag-box'),
++  stats: $('stats'), status: $('status'), toast: $('toast'),
++};
++
++// ---------- state ----------
++let notes = [];
++let settings = { theme: 'auto', sort: 'updated', mode: 'split' };
++let filter = { type: 'all', tag: null };
++let activeId = null;
++let query = '';
++let saveTimer = null, dirty = false;
++
++const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
++const byId = id => notes.find(n => n.id === id);
++const active = () => byId(activeId);
++
++function load() {
++  try { notes = JSON.parse(localStorage.getItem(KEY)) || []; } catch { notes = []; }
++  try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}); } catch {}
++  if (!Array.isArray(notes)) notes = [];
++  const cutoff = Date.now() - TRASH_DAYS * 864e5;
++  notes = notes.filter(n => n && n.id && !(n.deleted && n.deleted < cutoff));
++}
++function persist() {
++  clearTimeout(saveTimer); saveTimer = null;
++  try {
++    localStorage.setItem(KEY, JSON.stringify(notes));
++    dirty = false;
++    el.status.textContent = 'Saved';
++  } catch (e) {
++    el.status.textContent = '⚠ Could not save (storage full or blocked) — export a backup';
++  }
++}
++function scheduleSave() {
++  dirty = true; el.status.textContent = 'Saving…';
++  clearTimeout(saveTimer); saveTimer = setTimeout(persist, 300);
++}
++function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {} }
++
++// ---------- helpers ----------
++const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
++const titleOf = n => n.title.trim() || (n.body.split('\n').find(l => l.trim()) || '').replace(/^[#>\-*\s\[\]x]+/i, '').trim().slice(0, 60) || 'Untitled';
++function fmtDate(t) {
++  const d = new Date(t), now = new Date();
++  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
++  const opts = d.getFullYear() === now.getFullYear() ? { month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' };
++  return d.toLocaleDateString([], opts);
++}
++function snippet(n) {
++  return n.body.replace(/```[\s\S]*?```/g, ' ').replace(/[#>*_`~\[\]()-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 120);
++}
++function toast(msg, actionLabel, action) {
++  el.toast.innerHTML = '';
++  const s = document.createElement('span'); s.textContent = msg; el.toast.append(s);
++  if (actionLabel) {
++    const b = document.createElement('button'); b.textContent = actionLabel;
++    b.onclick = () => { action(); el.toast.hidden = true; };
++    el.toast.append(b);
++  }
++  el.toast.hidden = false;
++  clearTimeout(toast.t); toast.t = setTimeout(() => { el.toast.hidden = true; }, 6000);
++}
++
++// ---------- markdown ----------
++function inline(src) {
++  const stash = [];
++  const keep = h => '\u0000' + (stash.push(h) - 1) + '\u0000';
++  let s = esc(src);
++  s = s.replace(/`([^`]+)`/g, (m, c) => keep('<code>' + c + '</code>'));
++  s = s.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, (m, a, u) => keep(`<img alt="${a}" src="${u}">`));
++  s = s.replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)\)/g, (m, t, u) => keep(`<a href="${u}" target="_blank" rel="noopener noreferrer">${t}</a>`));
++  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<]+[^\s<.,;:!?)])/g, (m, p, u) => p + keep(`<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`));
++  s = s.replace(/\*\*(.+?)\*\*|__(.+?)__/g, (m, a, b) => `<strong>${a || b}</strong>`);
++  s = s.replace(/(^|[^*\w])\*(?!\s)(.+?)(?<!\s)\*(?!\*)/g, '$1<em>$2</em>');
++  s = s.replace(/(^|[^_\w])_(?!\s)(.+?)(?<!\s)_(?![_\w])/g, '$1<em>$2</em>');
++  s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
++  return s.replace(/\u0000(\d+)\u0000/g, (m, i) => stash[+i]);
++}
++function markdown(text) {
++  const lines = text.replace(/\r\n?/g, '\n').split('\n');
++  let out = '', i = 0, para = [], stack = [];
++  const flushPara = () => { if (para.length) { out += '<p>' + para.map(inline).join('<br>') + '</p>'; para = []; } };
++  const closeLists = () => { while (stack.length) { out += '</li></' + stack.pop().tag + '>'; } };
++  for (; i < lines.length; i++) {
++    const line = lines[i];
++    let m;
++    if ((m = line.match(/^\s*(```|~~~)\s*(\S*)/))) {
++      flushPara(); closeLists();
++      const fence = m[1], buf = [];
++      for (i++; i < lines.length && !lines[i].trim().startsWith(fence); i++) buf.push(lines[i]);
++      out += '<pre><code>' + esc(buf.join('\n')) + '</code></pre>';
++      continue;
++    }
++    if ((m = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/)) && !/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
++      flushPara();
++      const indent = m[1].replace(/\t/g, '    ').length, tag = /\d/.test(m[2]) ? 'ol' : 'ul';
++      while (stack.length && indent < stack[stack.length - 1].indent) out += '</li></' + stack.pop().tag + '>';
++      if (!stack.length || indent > stack[stack.length - 1].indent) { out += '<' + tag + '>'; stack.push({ indent, tag }); }
++      else out += '</li>';
++      const t = m[3].match(/^\[( |x|X)\]\s+(.*)$/);
++      if (t) {
++        const done = t[1] !== ' ';
++        out += `<li class="task${done ? ' done' : ''}"><input type="checkbox" data-line="${i}"${done ? ' checked' : ''}>${inline(t[2])}`;
++      } else out += '<li>' + inline(m[3]);
++      continue;
++    }
++    closeLists();
++    if (!line.trim()) { flushPara(); continue; }
++    if ((m = line.match(/^(#{1,6})\s+(.*?)\s*#*$/))) { flushPara(); out += `<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`; continue; }
++    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); out += '<hr>'; continue; }
++    if (/^\s*>/.test(line)) {
++      flushPara();
++      const buf = [];
++      for (; i < lines.length && /^\s*>/.test(lines[i]); i++) buf.push(lines[i].replace(/^\s*>\s?/, ''));
++      i--;
++      out += '<blockquote>' + markdown(buf.join('\n')) + '</blockquote>';
++      continue;
++    }
++    para.push(line);
++  }
++  flushPara(); closeLists();
++  return out;
++}
++
++// ---------- filtering ----------
++const live = () => notes.filter(n => !n.deleted);
++function visibleNotes() {
++  let list = filter.type === 'trash' ? notes.filter(n => n.deleted) : live();
++  if (filter.type === 'pinned') list = list.filter(n => n.pinned);
++  if (filter.type === 'tag') list = list.filter(n => n.tags.includes(filter.tag));
++  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
++  for (const t of terms) {
++    if (t.startsWith('#') && t.length > 1) { const tag = t.slice(1); list = list.filter(n => n.tags.some(x => x.includes(tag))); }
++    else list = list.filter(n => (n.title + '\n' + n.body + '\n' + n.tags.join(' ')).toLowerCase().includes(t));
++  }
++  const s = settings.sort;
++  list.sort((a, b) => {
++    if (filter.type !== 'trash' && a.pinned !== b.pinned) return a.pinned ? -1 : 1;
++    if (s === 'title') return titleOf(a).localeCompare(titleOf(b), undefined, { sensitivity: 'base' });
++    if (filter.type === 'trash') return b.deleted - a.deleted;
++    return b[s] - a[s];
++  });
++  return list;
++}
++
++// ---------- rendering ----------
++function renderNav() {
++  const lv = live();
++  const items = [
++    ['all', 'All notes', lv.length],
++    ['pinned', 'Pinned', lv.filter(n => n.pinned).length],
++    ['trash', 'Trash', notes.length - lv.length],
++  ];
++  el.nav.innerHTML = '';
++  for (const [type, label, count] of items) {
++    const b = document.createElement('button');
++    b.className = 'nav-item' + (filter.type === type ? ' active' : '');
++    b.innerHTML = `<span>${label}</span><span class="count">${count}</span>`;
++    b.onclick = () => setFilter(type);
++    el.nav.append(b);
++  }
++  const counts = {};
++  lv.forEach(n => n.tags.forEach(t => counts[t] = (counts[t] || 0) + 1));
++  el.tags.innerHTML = '';
++  const names = Object.keys(counts).sort();
++  if (!names.length) el.tags.innerHTML = '<div class="muted" style="padding:4px 8px;font-size:13px">No tags yet</div>';
++  for (const t of names) {
++    const b = document.createElement('button');
++    b.className = 'nav-item' + (filter.type === 'tag' && filter.tag === t ? ' active' : '');
++    b.innerHTML = `<span>#${esc(t)}</span><span class="count">${counts[t]}</span>`;
++    b.onclick = () => setFilter('tag', t);
++    el.tags.append(b);
++  }
++}
++function renderList() {
++  const list = visibleNotes();
++  const names = { all: 'All notes', pinned: 'Pinned', trash: 'Trash', tag: '#' + filter.tag };
++  el.listTitle.textContent = names[filter.type] + ' · ' + list.length;
++  el.list.innerHTML = '';
++  if (!list.length) {
++    const d = document.createElement('div'); d.className = 'no-notes';
++    d.textContent = query ? 'No notes match your search.' : filter.type === 'trash' ? 'Trash is empty.' : filter.type === 'all' ? 'No notes yet. Click “+ New” to start.' : 'Nothing here yet.';
++    el.list.append(d);
++    return;
++  }
++  if (filter.type === 'trash') {
++    const b = document.createElement('div'); b.className = 'no-notes'; b.style.padding = '8px';
++    b.innerHTML = `<button class="btn danger" id="empty-trash">Empty trash</button><div style="font-size:12px;margin-top:4px">Notes are deleted after ${TRASH_DAYS} days.</div>`;
++    el.list.append(b);
++    b.querySelector('button').onclick = () => {
++      if (confirm('Permanently delete all notes in the trash?')) {
++        notes = notes.filter(n => !n.deleted); if (!byId(activeId)) activeId = null;
++        persist(); render();
++      }
++    };
++  }
++  const frag = document.createDocumentFragment();
++  for (const n of list) {
++    const d = document.createElement('div');
++    d.className = 'note' + (n.id === activeId ? ' active' : '');
++    d.dataset.id = n.id; d.tabIndex = 0; d.setAttribute('role', 'listitem');
++    d.innerHTML = `<div class="t">${n.pinned && !n.deleted ? '📌 ' : ''}${esc(titleOf(n))}</div>
++      <div class="m"><span class="d">${fmtDate(n.updated)}</span><span class="snip">${esc(snippet(n))}</span></div>
++      ${n.tags.length ? '<div class="tg">' + n.tags.map(t => `<span class="chip">#${esc(t)}</span>`).join('') + '</div>' : ''}`;
++    frag.append(d);
++  }
++  el.list.append(frag);
++}
++function renderTags(n) {
++  el.tagBox.innerHTML = '';
++  for (const t of n.tags) {
++    const c = document.createElement('span'); c.className = 'chip'; c.textContent = '#' + t; c.title = 'Click to remove';
++    if (!n.deleted) c.onclick = () => { n.tags = n.tags.filter(x => x !== t); touch(n); renderTags(n); renderNav(); renderList(); };
++    el.tagBox.append(c);
++  }
++  if (!n.deleted) {
++    const i = document.createElement('input'); i.placeholder = 'Add tag…'; i.setAttribute('aria-label', 'Add tag');
++    const add = () => {
++      const t = i.value.trim().replace(/^#/, '').toLowerCase().replace(/[\s,]+/g, '-');
++      if (t && !n.tags.includes(t)) { n.tags.push(t); n.tags.sort(); touch(n); renderTags(n); renderNav(); renderList(); el.tagBox.querySelector('input').focus(); }
++      else i.value = '';
++    };
++    i.onkeydown = e => {
++      if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add(); }
++      else if (e.key === 'Backspace' && !i.value && n.tags.length) { n.tags.pop(); touch(n); renderTags(n); renderNav(); renderList(); el.tagBox.querySelector('input').focus(); }
++    };
++    i.onblur = add;
++    el.tagBox.append(i);
++  }
++}
++function renderPreview() {
++  const n = active(); if (n) el.preview.innerHTML = markdown(n.body) || '<p class="muted">Nothing to preview.</p>';
++}
++function renderStats() {
++  const n = active(); if (!n) return;
++  const words = (n.body.trim().match(/\S+/g) || []).length;
++  el.stats.textContent = `${words} word${words === 1 ? '' : 's'} · ${n.body.length} chars · edited ${fmtDate(n.updated)}`;
++}
++function renderEditor() {
++  const n = active();
++  el.empty.hidden = !!n; el.editor.hidden = !n;
++  if (!n) { el.app.dataset.view = 'list'; return; }
++  const trashed = !!n.deleted;
++  if (el.title.value !== n.title) el.title.value = n.title;
++  if (el.body.value !== n.body) el.body.value = n.body;
++  el.title.readOnly = el.body.readOnly = trashed;
++  $('btn-del').hidden = trashed; $('btn-restore').hidden = !trashed; $('btn-purge').hidden = !trashed;
++  $('btn-pin').hidden = trashed; $('toolbar').hidden = trashed;
++  $('btn-pin').style.opacity = n.pinned ? 1 : .45;
++  renderTags(n); renderPreview(); renderStats(); applyMode();
++}
++function applyMode() {
++  let mode = settings.mode;
++  if (window.innerWidth <= 860 && mode === 'split') mode = 'edit';
++  const n = active();
++  if (n && n.deleted) mode = 'preview';
++  el.panes.dataset.mode = mode;
++  document.querySelectorAll('#mode button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
++}
++function render() { renderNav(); renderList(); renderEditor(); }
++
++// ---------- actions ----------
++function touch(n) { n.updated = Date.now(); scheduleSave(); renderStats(); }
++
++function discardIfEmpty() {
++  const n = active();
++  if (n && !n.deleted && !n.title.trim() && !n.body.trim() && !n.tags.length) {
++    notes = notes.filter(x => x !== n);
++  }
++}
++function select(id, showEditor = true) {
++  if (id !== activeId) discardIfEmpty();
++  activeId = id;
++  if (showEditor && id) el.app.dataset.view = 'editor';
++  render();
++}
++function setFilter(type, tag = null) {
++  discardIfEmpty();
++  filter = { type, tag };
++  el.app.classList.remove('menu');
++  const first = visibleNotes()[0];
++  activeId = first && window.innerWidth > 860 ? first.id : null;
++  el.app.dataset.view = 'list';
++  render();
++}
++function newNote() {
++  discardIfEmpty();
++  if (filter.type === 'trash') filter = { type: 'all', tag: null };
++  query = ''; el.search.value = '';
++  const now = Date.now();
++  const n = { id: uid(), title: '', body: '', tags: filter.type === 'tag' ? [filter.tag] : [], pinned: filter.type === 'pinned', created: now, updated: now, deleted: null };
++  notes.unshift(n);
++  activeId = n.id;
++  el.app.dataset.view = 'editor';
++  if (settings.mode === 'preview') { settings.mode = 'edit'; saveSettings(); }
++  persist(); render();
++  el.title.focus();
++}
++function trashNote(n) {
++  n.deleted = Date.now(); n.pinned = false;
++  persist();
++  const next = visibleNotes()[0];
++  activeId = next && window.innerWidth > 860 ? next.id : null;
++  el.app.dataset.view = 'list';
++  render();
++  toast('Moved to trash', 'Undo', () => { n.deleted = null; persist(); activeId = n.id; render(); });
++}
++function restoreNote(n) {
++  n.deleted = null; n.updated = Date.now(); persist();
++  filter = { type: 'all', tag: null }; activeId = n.id; render();
++  toast('Note restored');
++}
++function purgeNote(n) {
++  if (!confirm('Permanently delete this note? This cannot be undone.')) return;
++  notes = notes.filter(x => x !== n); persist();
++  const next = visibleNotes()[0];
++  activeId = next && window.innerWidth > 860 ? next.id : null;
++  el.app.dataset.view = 'list';
++  render();
++}
++function download(name, text, type) {
++  const a = document.createElement('a');
++  a.href = URL.createObjectURL(new Blob([text], { type }));
++  a.download = name; document.body.append(a); a.click(); a.remove();
++  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
++}
++const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'note';
++function importData(text) {
++  let data;
++  try { data = JSON.parse(text); } catch { return toast('Import failed: not valid JSON'); }
++  const arr = Array.isArray(data) ? data : data && data.notes;
++  if (!Array.isArray(arr)) return toast('Import failed: no notes found');
++  let added = 0, updated = 0;
++  for (const r of arr) {
++    if (!r || typeof r !== 'object' || (typeof r.body !== 'string' && typeof r.title !== 'string')) continue;
++    const now = Date.now();
++    const n = {
++      id: typeof r.id === 'string' ? r.id : uid(),
++      title: String(r.title || ''), body: String(r.body || ''),
++      tags: Array.isArray(r.tags) ? [...new Set(r.tags.map(t => String(t).toLowerCase().trim()).filter(Boolean))] : [],
++      pinned: !!r.pinned, created: +r.created || now, updated: +r.updated || now, deleted: r.deleted ? +r.deleted || now : null,
++    };
++    const ex = byId(n.id);
++    if (!ex) { notes.push(n); added++; }
++    else if (n.updated > ex.updated) { Object.assign(ex, n); updated++; }
++  }
++  persist(); render();
++  toast(`Imported ${added} new, ${updated} updated`);
++}
++
++// ---------- editor text helpers ----------
++function replaceRange(start, end, text, selStart, selEnd) {
++  const b = el.body;
++  b.focus(); b.setSelectionRange(start, end);
++  if (!document.execCommand || !document.execCommand('insertText', false, text)) {
++    b.setRangeText(text, start, end, 'end'); b.dispatchEvent(new Event('input', { bubbles: true }));
++  }
++  b.setSelectionRange(selStart ?? start + text.length, selEnd ?? selStart ?? start + text.length);
++}
++function wrap(before, after, placeholder) {
++  const b = el.body, s = b.selectionStart, e = b.selectionEnd;
++  const sel = b.value.slice(s, e) || placeholder;
++  replaceRange(s, e, before + sel + after, s + before.length, s + before.length + sel.length);
++}
++function prefixLines(prefix) {
++  const b = el.body, v = b.value;
++  const s = v.lastIndexOf('\n', b.selectionStart - 1) + 1;
++  let e = v.indexOf('\n', b.selectionEnd); if (e < 0) e = v.length;
++  const block = v.slice(s, e);
++  const lines = block.split('\n');
++  const all = lines.every(l => l.startsWith(prefix));
++  const out = lines.map(l => all ? l.slice(prefix.length) : prefix + l).join('\n');
++  replaceRange(s, e, out, s, s + out.length);
++}
++function doAction(a) {
++  if (active() && active().deleted) return;
++  if (settings.mode === 'preview') setMode('edit');
++  switch (a) {
++    case 'b': wrap('**', '**', 'bold'); break;
++    case 'i': wrap('*', '*', 'italic'); break;
++    case 's': wrap('~~', '~~', 'text'); break;
++    case 'code': {
++      const b = el.body, sel = b.value.slice(b.selectionStart, b.selectionEnd);
++      sel.includes('\n') ? wrap('```\n', '\n```', '') : wrap('`', '`', 'code'); break;
++    }
++    case 'h': prefixLines('## '); break;
++    case 'ul': prefixLines('- '); break;
++    case 'task': prefixLines('- [ ] '); break;
++    case 'quote': prefixLines('> '); break;
++    case 'link': {
++      const b = el.body, s = b.selectionStart, e = b.selectionEnd, sel = b.value.slice(s, e) || 'text';
++      const t = `[${sel}](https://)`;
++      replaceRange(s, e, t, s + sel.length + 3, s + t.length - 1); break;
++    }
++  }
++}
++function setMode(m) { settings.mode = m; saveSettings(); applyMode(); }
++
++function onBodyKey(e) {
++  const b = el.body, v = b.value, pos = b.selectionStart;
++  const mod = e.metaKey || e.ctrlKey;
++  if (mod && !e.altKey) {
++    const k = e.key.toLowerCase();
++    if (k === 'b') { e.preventDefault(); doAction('b'); return; }
++    if (k === 'i') { e.preventDefault(); doAction('i'); return; }
++    if (k === 'l') { e.preventDefault(); doAction('link'); return; }
++  }
++  const ls = v.lastIndexOf('\n', pos - 1) + 1;
++  let le = v.indexOf('\n', pos); if (le < 0) le = v.length;
++  const line = v.slice(ls, le);
++  const m = line.match(/^(\s*)([-*+]|(\d+)\.)(\s+\[[ xX]\])?\s+(.*)$/) || line.match(/^(\s*)([-*+]|(\d+)\.)(\s+\[[ xX]\])?\s+()$/);
++  if (e.key === 'Enter' && !e.shiftKey && !mod && !e.isComposing && m && b.selectionStart === b.selectionEnd && pos === le) {
++    e.preventDefault();
++    if (!m[5].trim()) { replaceRange(ls, le, '', ls); return; } // empty item ends the list
++    const marker = m[3] ? (+m[3] + 1) + '.' : m[2];
++    const ins = '\n' + m[1] + marker + (m[4] ? ' [ ]' : '') + ' ';
++    replaceRange(pos, pos, ins);
++    return;
++  }
++  if (e.key === 'Tab' && !mod && m && b.selectionStart === b.selectionEnd) {
++    e.preventDefault();
++    if (e.shiftKey) {
++      const n = Math.min(2, line.match(/^ */)[0].length);
++      if (n) replaceRange(ls, ls + n, '', Math.max(ls, pos - n));
++    } else replaceRange(ls, ls, '  ', pos + 2);
++  }
++}
++
++// ---------- events ----------
++el.body.addEventListener('keydown', onBodyKey);
++el.body.addEventListener('input', () => {
++  const n = active(); if (!n || n.deleted) return;
++  n.body = el.body.value; touch(n); renderPreview(); renderList();
++});
++el.title.addEventListener('input', () => {
++  const n = active(); if (!n || n.deleted) return;
++  n.title = el.title.value; touch(n); renderList();
++});
++el.title.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); el.body.focus(); } });
++
++el.preview.addEventListener('change', e => {
++  const cb = e.target; const n = active();
++  if (!n || n.deleted || cb.type !== 'checkbox') return;
++  const lines = n.body.split('\n'), i = +cb.dataset.line;
++  if (lines[i] === undefined) return;
++  lines[i] = lines[i].replace(/\[( |x|X)\]/, cb.checked ? '[x]' : '[ ]');
++  n.body = lines.join('\n'); el.body.value = n.body;
++  touch(n); renderPreview(); renderList();
++});
++
++el.list.addEventListener('click', e => {
++  const d = e.target.closest('.note'); if (d) select(d.dataset.id);
++});
++el.list.addEventListener('keydown', e => {
++  const d = e.target.closest('.note'); if (!d) return;
++  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(d.dataset.id); }
++  else if (e.key === 'ArrowDown' && d.nextElementSibling) { e.preventDefault(); d.nextElementSibling.focus(); }
++  else if (e.key === 'ArrowUp' && d.previousElementSibling) { e.preventDefault(); d.previousElementSibling.focus(); }
++});
++
++el.search.addEventListener('input', () => {
++  query = el.search.value;
++  const vis = visibleNotes();
++  if (!vis.some(n => n.id === activeId)) { discardIfEmpty(); activeId = vis[0] && window.innerWidth > 860 ? vis[0].id : null; renderEditor(); }
++  renderList();
++});
++el.search.addEventListener('keydown', e => {
++  if (e.key === 'Escape') { el.search.value = ''; query = ''; el.search.dispatchEvent(new Event('input')); el.search.blur(); }
++  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
++    e.preventDefault();
++    const vis = visibleNotes(); if (!vis.length) return;
++    let i = vis.findIndex(n => n.id === activeId);
++    i = e.key === 'ArrowDown' ? Math.min(vis.length - 1, i + 1) : Math.max(0, i - 1);
++    select(vis[i].id, false);
++  }
++  if (e.key === 'Enter' && activeId) { el.app.dataset.view = 'editor'; renderEditor(); el.body.focus(); }
++});
++el.sort.addEventListener('change', () => { settings.sort = el.sort.value; saveSettings(); renderList(); });
++
++$('btn-new').onclick = $('btn-new-empty').onclick = newNote;
++$('btn-menu').onclick = () => el.app.classList.add('menu');
++$('scrim').onclick = () => el.app.classList.remove('menu');
++$('btn-back').onclick = () => { discardIfEmpty(); persist(); el.app.dataset.view = 'list'; render(); };
++$('btn-pin').onclick = () => { const n = active(); if (n) { n.pinned = !n.pinned; touch(n); persist(); render(); } };
++$('btn-del').onclick = () => { const n = active(); if (n) trashNote(n); };
++$('btn-restore').onclick = () => { const n = active(); if (n) restoreNote(n); };
++$('btn-purge').onclick = () => { const n = active(); if (n) purgeNote(n); };
++$('btn-md').onclick = () => {
++  const n = active(); if (!n) return;
++  const h = n.title.trim() ? '# ' + n.title.trim() + '\n\n' : '';
++  download(slug(titleOf(n)) + '.md', h + n.body + '\n', 'text/markdown');
++};
++$('toolbar').addEventListener('mousedown', e => e.preventDefault()); // keep textarea selection
++$('toolbar').addEventListener('click', e => { const b = e.target.closest('button'); if (b) doAction(b.dataset.act); });
++$('mode').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setMode(b.dataset.mode); });
++
++$('btn-export').onclick = () => {
++  persist();
++  const d = new Date().toISOString().slice(0, 10);
++  download(`notes-backup-${d}.json`, JSON.stringify({ version: 1, exported: Date.now(), notes }, null, 2), 'application/json');
++};
++$('btn-import').onclick = () => $('file-import').click();
++$('file-import').onchange = e => {
++  const f = e.target.files[0]; if (!f) return;
++  const r = new FileReader(); r.onload = () => importData(String(r.result)); r.readAsText(f);
++  e.target.value = '';
++};
++$('btn-help').onclick = () => $('help').showModal();
++
++const themes = ['auto', 'light', 'dark'], icons = { auto: '◐ Auto', light: '☀ Light', dark: '☾ Dark' };
++function applyTheme() {
++  document.documentElement.dataset.theme = settings.theme;
++  $('btn-theme').textContent = icons[settings.theme];
++}
++$('btn-theme').onclick = () => {
++  settings.theme = themes[(themes.indexOf(settings.theme) + 1) % 3]; saveSettings(); applyTheme();
++};
++
++document.addEventListener('keydown', e => {
++  const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
++  if (mod && k === 'k') { e.preventDefault(); el.app.dataset.view = 'list'; el.search.focus(); el.search.select(); }
++  else if (mod && e.altKey && (k === 'n' || e.code === 'KeyN')) { e.preventDefault(); newNote(); }
++  else if (mod && !e.altKey && k === 'e' && active() && !active().deleted) {
++    e.preventDefault();
++    const order = window.innerWidth <= 860 ? ['edit', 'preview'] : ['edit', 'split', 'preview'];
++    const cur = el.panes.dataset.mode;
++    setMode(order[(order.indexOf(cur) + 1) % order.length]);
++  }
++  else if (mod && k === 's') { e.preventDefault(); persist(); }
++  else if (e.key === 'Escape') el.app.classList.remove('menu');
++});
++
++window.addEventListener('resize', applyMode);
++window.addEventListener('beforeunload', () => { if (dirty) persist(); });
++document.addEventListener('visibilitychange', () => { if (document.hidden && dirty) persist(); });
++window.addEventListener('storage', e => {
++  if (e.key !== KEY) return;
++  const keepBody = document.activeElement === el.body || document.activeElement === el.title;
++  const prev = active() && { t: active().title, b: active().body };
++  load();
++  if (!byId(activeId)) activeId = null;
++  else if (keepBody && prev) { const n = active(); n.title = prev.t; n.body = prev.b; }
++  render();
++});
++
++// ---------- init ----------
++load();
++el.sort.value = settings.sort;
++applyTheme();
++{
++  const first = visibleNotes()[0];
++  activeId = first && window.innerWidth > 860 ? first.id : null;
++}
++render();
++persist();
++})();
+diff --git a/notes/index.html b/notes/index.html
+new file mode 100644
+index 0000000..a1c7666
+--- /dev/null
++++ b/notes/index.html
+@@ -0,0 +1,105 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Notes</title>
++<link rel="stylesheet" href="style.css">
++</head>
++<body>
++<div id="app" data-view="list">
++  <aside id="sidebar" aria-label="Navigation">
++    <div class="brand">Notes</div>
++    <nav id="nav"></nav>
++    <div class="side-title">Tags</div>
++    <div id="tags"></div>
++    <div class="side-foot">
++      <button class="btn ghost" id="btn-theme" title="Change theme"></button>
++      <button class="btn ghost" id="btn-export" title="Export all notes as JSON">Export</button>
++      <button class="btn ghost" id="btn-import" title="Import notes from JSON">Import</button>
++      <button class="btn ghost" id="btn-help" title="Keyboard shortcuts">?</button>
++      <input type="file" id="file-import" accept="application/json,.json" hidden>
++    </div>
++  </aside>
++  <div id="scrim"></div>
++
++  <section id="list-pane" aria-label="Note list">
++    <div class="list-head">
++      <button class="btn icon only-mobile" id="btn-menu" aria-label="Menu">☰</button>
++      <input id="search" type="search" placeholder="Search notes  (⌘/Ctrl+K)" aria-label="Search notes" autocomplete="off">
++      <button class="btn primary" id="btn-new" title="New note (⌘/Ctrl+Alt+N)">+ New</button>
++    </div>
++    <div class="list-sub">
++      <span id="list-title"></span>
++      <select id="sort" aria-label="Sort notes">
++        <option value="updated">Last edited</option>
++        <option value="created">Created</option>
++        <option value="title">Title</option>
++      </select>
++    </div>
++    <div id="list" role="list"></div>
++  </section>
++
++  <main id="editor-pane" aria-label="Editor">
++    <div id="empty" class="empty">
++      <p>No note selected</p>
++      <button class="btn primary" id="btn-new-empty">Create a note</button>
++    </div>
++    <div id="editor" hidden>
++      <div class="ed-bar">
++        <button class="btn icon only-mobile" id="btn-back" aria-label="Back to list">←</button>
++        <div class="toolbar" id="toolbar">
++          <button data-act="h" title="Heading">H</button>
++          <button data-act="b" title="Bold (⌘/Ctrl+B)"><b>B</b></button>
++          <button data-act="i" title="Italic (⌘/Ctrl+I)"><i>I</i></button>
++          <button data-act="s" title="Strikethrough"><s>S</s></button>
++          <button data-act="code" title="Code">&lt;/&gt;</button>
++          <button data-act="ul" title="Bulleted list">•</button>
++          <button data-act="task" title="Checklist">☑</button>
++          <button data-act="quote" title="Quote">❝</button>
++          <button data-act="link" title="Link (⌘/Ctrl+L)">🔗</button>
++        </div>
++        <div class="spacer"></div>
++        <div class="seg" id="mode">
++          <button data-mode="edit">Edit</button>
++          <button data-mode="split" class="hide-narrow">Split</button>
++          <button data-mode="preview">Preview</button>
++        </div>
++        <button class="btn ghost" id="btn-pin" title="Pin / unpin">📌</button>
++        <button class="btn ghost" id="btn-md" title="Download as Markdown">⬇</button>
++        <button class="btn ghost" id="btn-del" title="Move to trash">🗑</button>
++        <button class="btn ghost" id="btn-restore" hidden>Restore</button>
++        <button class="btn ghost danger" id="btn-purge" hidden>Delete forever</button>
++      </div>
++      <input id="title" placeholder="Title" aria-label="Title" autocomplete="off">
++      <div id="tag-box" class="tag-box"></div>
++      <div id="panes">
++        <textarea id="body" placeholder="Start writing… Markdown supported." aria-label="Note body" spellcheck="true"></textarea>
++        <div id="preview" class="md"></div>
++      </div>
++      <div class="ed-foot"><span id="stats"></span><span id="status"></span></div>
++    </div>
++  </main>
++</div>
++
++<div id="toast" role="status" aria-live="polite" hidden></div>
++
++<dialog id="help">
++  <h3>Keyboard shortcuts</h3>
++  <table>
++    <tr><td><kbd>Ctrl/⌘</kbd> + <kbd>Alt</kbd> + <kbd>N</kbd></td><td>New note</td></tr>
++    <tr><td><kbd>Ctrl/⌘</kbd> + <kbd>K</kbd></td><td>Search</td></tr>
++    <tr><td><kbd>Ctrl/⌘</kbd> + <kbd>E</kbd></td><td>Cycle edit / split / preview</td></tr>
++    <tr><td><kbd>Ctrl/⌘</kbd> + <kbd>B</kbd> / <kbd>I</kbd> / <kbd>L</kbd></td><td>Bold / italic / link</td></tr>
++    <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Indent / outdent list item</td></tr>
++    <tr><td><kbd>Enter</kbd></td><td>Continue list or checklist</td></tr>
++    <tr><td><kbd>↑</kbd> <kbd>↓</kbd> in search</td><td>Move between notes</td></tr>
++    <tr><td><kbd>Esc</kbd></td><td>Clear search / close</td></tr>
++  </table>
++  <p class="muted">Search supports <code>#tag</code> terms, e.g. <code>#work budget</code>. Notes are stored in this browser only — use Export for backups.</p>
++  <form method="dialog"><button class="btn primary">Close</button></form>
++</dialog>
++
++<script src="app.js"></script>
++</body>
++</html>
+diff --git a/notes/style.css b/notes/style.css
+new file mode 100644
+index 0000000..7c5a67d
+--- /dev/null
++++ b/notes/style.css
+@@ -0,0 +1,138 @@
++:root {
++  --bg: #ffffff; --bg2: #f6f6f4; --bg3: #ecebe7; --fg: #1f2328; --muted: #6b7280;
++  --line: #e2e1dc; --accent: #2f6fed; --accent-fg: #fff; --danger: #c93434;
++  --sel: #e5edff; --code: #f1f0ec; color-scheme: light;
++}
++@media (prefers-color-scheme: dark) {
++  :root:not([data-theme="light"]) {
++    --bg: #18191b; --bg2: #1f2023; --bg3: #2a2b2f; --fg: #e6e6e6; --muted: #9096a0;
++    --line: #333439; --accent: #6d9bff; --accent-fg: #101114; --danger: #ff7a7a;
++    --sel: #26334f; --code: #2a2b2f; color-scheme: dark;
++  }
++}
++:root[data-theme="dark"] {
++  --bg: #18191b; --bg2: #1f2023; --bg3: #2a2b2f; --fg: #e6e6e6; --muted: #9096a0;
++  --line: #333439; --accent: #6d9bff; --accent-fg: #101114; --danger: #ff7a7a;
++  --sel: #26334f; --code: #2a2b2f; color-scheme: dark;
++}
++* { box-sizing: border-box; }
++html, body { height: 100%; margin: 0; }
++body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); }
++button, input, select, textarea { font: inherit; color: inherit; }
++[hidden] { display: none !important; }
++.muted { color: var(--muted); }
++
++#app { display: grid; grid-template-columns: 210px 320px 1fr; height: 100%; }
++
++.btn { border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
++.btn:hover { background: var(--bg3); }
++.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
++.btn.primary:hover { filter: brightness(1.08); }
++.btn.ghost { border-color: transparent; background: transparent; }
++.btn.ghost:hover { background: var(--bg3); }
++.btn.danger { color: var(--danger); }
++.btn.icon { padding: 4px 9px; }
++button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .note:focus-visible {
++  outline: 2px solid var(--accent); outline-offset: -2px;
++}
++
++/* sidebar */
++#sidebar { background: var(--bg2); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px; overflow-y: auto; }
++.brand { font-weight: 700; font-size: 18px; padding: 0 8px 12px; }
++.nav-item { display: flex; justify-content: space-between; align-items: center; width: 100%; text-align: left; border: 0; background: none; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
++.nav-item:hover { background: var(--bg3); }
++.nav-item.active { background: var(--sel); font-weight: 600; }
++.nav-item .count { color: var(--muted); font-size: 12px; }
++.side-title { margin: 16px 8px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
++#tags { flex: 1; }
++.side-foot { display: flex; flex-wrap: wrap; gap: 2px; border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
++.side-foot .btn { font-size: 13px; padding: 4px 7px; }
++
++/* list */
++#list-pane { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; min-height: 0; }
++.list-head { display: flex; gap: 6px; padding: 10px; }
++#search { flex: 1; min-width: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
++.list-sub { display: flex; justify-content: space-between; align-items: center; padding: 0 12px 6px; font-size: 12px; color: var(--muted); }
++.list-sub select { border: 0; background: none; color: var(--muted); cursor: pointer; }
++#list { overflow-y: auto; flex: 1; border-top: 1px solid var(--line); }
++.note { padding: 10px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
++.note:hover { background: var(--bg2); }
++.note.active { background: var(--sel); }
++.note .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.note .m { display: flex; gap: 8px; font-size: 12px; color: var(--muted); }
++.note .snip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
++.note .d { flex: none; }
++.note .tg { margin-top: 3px; display: flex; flex-wrap: wrap; gap: 4px; }
++.chip { font-size: 11px; background: var(--bg3); border-radius: 10px; padding: 0 7px; color: var(--muted); }
++.no-notes { padding: 30px 16px; text-align: center; color: var(--muted); }
++
++/* editor */
++#editor-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
++.empty { margin: auto; text-align: center; color: var(--muted); }
++#editor { display: flex; flex-direction: column; height: 100%; min-height: 0; }
++.ed-bar { display: flex; align-items: center; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
++.spacer { flex: 1; }
++.toolbar { display: flex; gap: 2px; }
++.toolbar button { border: 0; background: none; min-width: 30px; height: 30px; border-radius: 6px; cursor: pointer; }
++.toolbar button:hover { background: var(--bg3); }
++.seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
++.seg button { border: 0; background: none; padding: 4px 10px; cursor: pointer; font-size: 13px; }
++.seg button.on { background: var(--accent); color: var(--accent-fg); }
++#title { border: 0; background: none; font-size: 24px; font-weight: 700; padding: 14px 20px 4px; outline-offset: -2px; }
++.tag-box { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 2px 20px 8px; }
++.tag-box .chip { cursor: pointer; font-size: 12px; padding: 1px 8px; }
++.tag-box .chip:hover { text-decoration: line-through; }
++.tag-box input { border: 0; background: none; min-width: 110px; padding: 2px 0; font-size: 13px; }
++#panes { flex: 1; display: grid; grid-template-columns: 1fr; min-height: 0; border-top: 1px solid var(--line); }
++#panes[data-mode="split"] { grid-template-columns: 1fr 1fr; }
++#panes[data-mode="edit"] #preview, #panes[data-mode="preview"] #body { display: none; }
++#body { border: 0; resize: none; background: none; padding: 16px 20px; min-height: 0; font: 14.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
++#panes[data-mode="split"] #body { border-right: 1px solid var(--line); }
++#preview { overflow-y: auto; padding: 16px 20px; min-height: 0; }
++.ed-foot { display: flex; justify-content: space-between; padding: 4px 20px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
++
++/* markdown */
++.md > :first-child { margin-top: 0; }
++.md h1, .md h2, .md h3, .md h4 { line-height: 1.25; margin: 1.2em 0 .4em; }
++.md h1 { font-size: 1.7em; } .md h2 { font-size: 1.4em; } .md h3 { font-size: 1.15em; }
++.md p, .md ul, .md ol, .md pre, .md blockquote { margin: .6em 0; }
++.md ul, .md ol { padding-left: 1.6em; }
++.md li.task { list-style: none; margin-left: -1.3em; }
++.md li.task input { margin-right: 6px; cursor: pointer; }
++.md li.done { color: var(--muted); text-decoration: line-through; }
++.md code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: .9em; }
++.md pre { background: var(--code); padding: 10px 12px; border-radius: 6px; overflow-x: auto; }
++.md pre code { padding: 0; background: none; }
++.md blockquote { border-left: 3px solid var(--line); margin-left: 0; padding-left: 12px; color: var(--muted); }
++.md a { color: var(--accent); }
++.md hr { border: 0; border-top: 1px solid var(--line); }
++.md img { max-width: 100%; }
++
++/* misc */
++#toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; display: flex; gap: 12px; align-items: center; z-index: 20; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
++#toast button { background: none; border: 0; color: var(--accent); font-weight: 700; cursor: pointer; filter: brightness(1.3); }
++dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); max-width: 480px; }
++dialog::backdrop { background: rgba(0,0,0,.4); }
++dialog table { border-collapse: collapse; width: 100%; }
++dialog td { padding: 4px 8px 4px 0; }
++kbd { background: var(--bg3); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 12px; }
++.only-mobile { display: none; }
++#scrim { display: none; }
++
++@media (max-width: 860px) {
++  #app { grid-template-columns: 1fr; }
++  .only-mobile { display: inline-block; }
++  .hide-narrow { display: none; }
++  #sidebar { position: fixed; z-index: 10; top: 0; bottom: 0; left: 0; width: 240px; transform: translateX(-100%); transition: transform .18s; }
++  #app.menu #sidebar { transform: none; }
++  #app.menu #scrim { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 9; }
++  #app[data-view="list"] #editor-pane { display: none; }
++  #app[data-view="editor"] #list-pane { display: none; }
++  #title { font-size: 20px; padding-left: 14px; }
++  .tag-box, .ed-foot { padding-left: 14px; padding-right: 14px; }
++  .toolbar { order: 5; width: 100%; overflow-x: auto; }
++}
++@media print {
++  #sidebar, #list-pane, .ed-bar, #tag-box, .ed-foot, #body { display: none !important; }
++  #app { display: block; } #preview { display: block !important; overflow: visible; }
++}

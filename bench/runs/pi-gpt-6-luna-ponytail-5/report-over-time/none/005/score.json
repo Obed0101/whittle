@@ -1,0 +1,30 @@
+{
+  "task": "report-over-time",
+  "arm": "none",
+  "run": "005",
+  "checks": 40,
+  "passed": 36,
+  "missed": [
+    "test_r30_group_names_title_cased_in_table_only",
+    "test_r37_markdown_header_and_alignment_row",
+    "test_r38_markdown_rows",
+    "test_r39_markdown_total_row"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 181,
+  "agent": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-6-luna",
+    "thinking": "medium",
+    "exit": 0,
+    "seconds": 82.0,
+    "tokens": {
+      "input": 43644,
+      "output": 6612,
+      "cacheRead": 28672,
+      "cost": 0.007957
+    },
+    "turns": 21,
+    "tool_calls": 22
+  }
+}

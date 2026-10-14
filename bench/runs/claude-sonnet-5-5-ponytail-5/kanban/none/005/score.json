@@ -1,0 +1,28 @@
+{
+  "task": "kanban",
+  "arm": "none",
+  "run": "005",
+  "checks": 40,
+  "passed": 36,
+  "missed": [
+    "test_k10_rename_or_delete_columns",
+    "test_k23_motion_with_reduced_motion_respected",
+    "test_k38_sort_cards",
+    "test_k39_saved_data_has_a_version"
+  ],
+  "existing_tests_pass": true,
+  "lines_added": 769,
+  "agent": {
+    "harness": "claude",
+    "model": "claude-sonnet-5-5",
+    "exit": 0,
+    "seconds": 111.2,
+    "tokens": {
+      "input": 22991,
+      "output": 19480,
+      "cacheRead": 122874,
+      "cost": 0.299031
+    },
+    "turns": 6
+  }
+}

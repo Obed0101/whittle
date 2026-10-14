@@ -1,0 +1,132 @@
+diff --git a/app/page.py b/app/page.py
+new file mode 100644
+index 0000000..728bdf1
+--- /dev/null
++++ b/app/page.py
+@@ -0,0 +1,126 @@
++"""Render service status data as a self-contained public status page."""
++import html
++import re
++import sys
++from datetime import datetime, timezone
++
++from app.status import STATES, load
++
++
++STATE_LABELS = {
++    "operational": "Operational",
++    "degraded": "Degraded performance",
++    "outage": "Major outage",
++    "maintenance": "Under maintenance",
++}
++SEVERITY = {"outage": 0, "degraded": 1, "maintenance": 2, "operational": 3}
++
++
++def _escape(value):
++    return html.escape(str(value), quote=True)
++
++
++def _slug(name):
++    slug = "".join(char.lower() if char.isalnum() else "-" for char in str(name))
++    return re.sub(r"-+", "-", slug).strip("-")
++
++
++def render(services: list[dict], generated_at: str) -> str:
++    """Return a complete, standalone HTML status page."""
++    for service in services:
++        if service["state"] not in STATES:
++            raise ValueError(f"unknown state: {service['state']}")
++
++    ordered = sorted(services, key=lambda service: (
++        SEVERITY[service["state"]], str(service["name"]).casefold()
++    ))
++    total = len(services)
++    if total:
++        attention = sum(s["state"] in ("degraded", "outage") for s in services)
++        maintenance = sum(s["state"] == "maintenance" for s in services)
++        if attention:
++            banner_text = f"{attention} of {total} service{'s' if attention != 1 else ''} " \
++                          f"need{'s' if attention == 1 else ''} attention"
++        else:
++            banner_text = "All systems operational"
++        if maintenance:
++            banner_text += f" · {maintenance} under maintenance"
++        modifier = "down" if any(s["state"] == "outage" for s in services) else (
++            "warn" if any(s["state"] == "degraded" for s in services) else "ok"
++        )
++        title = f"Status · {total - attention} of {total} operational"
++        banner = f'<div class="banner banner--{modifier}" role="status">{_escape(banner_text)}</div>'
++        items = []
++        for service in ordered:
++            state = service["state"]
++            name = _escape(service["name"])
++            url = service.get("url")
++            if url:
++                rel = ' rel="noopener"' if re.match(r"^https?://", str(url), re.I) else ""
++                heading = f'<a href="{_escape(url)}"{rel}>{name}</a>'
++            else:
++                heading = name
++            parts = [f'<li class="service" id="service-{_escape(_slug(service["name"]))}" data-state="{_escape(state)}">',
++                     '<span class="dot" aria-hidden="true"></span>', f'<h2>{heading}</h2>',
++                     f'<span class="state">{STATE_LABELS[state]}</span>']
++            if service.get("note"):
++                parts.append(f'<p class="note">{_escape(service["note"])}</p>')
++            if service.get("uptime") is not None:
++                parts.append(f'<span class="uptime">{float(service["uptime"]):.2f}% uptime</span>')
++            parts.append('</li>')
++            items.append("".join(parts))
++        content = f'<main><ul class="services">{"".join(items)}</ul></main>'
++    else:
++        title = "Status · no services"
++        banner = ""
++        content = '<main><p class="empty">No services configured.</p></main>'
++
++    return f'''<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>{_escape(title)}</title>
++<style>
++:root {{ --bg: #f7f9fc; --text: #172334; --ok: #16834b; --warn: #a56800; --down: #c62828; --maint: #5267a8; }}
++@media (prefers-color-scheme: dark) {{ :root {{ --bg: #121923; --text: #edf2f7; --ok: #54d68b; --warn: #ffc857; --down: #ff7373; --maint: #aabaff; }} }}
++* {{ box-sizing: border-box; }}
++body {{ margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }}
++header, .banner, main, footer {{ max-width: 640px; margin-left: auto; margin-right: auto; }}
++h1 {{ margin: 0 0 1rem; }}
++.banner {{ padding: 1rem; border-radius: .5rem; margin-bottom: 1.5rem; }}
++.banner--ok {{ background: color-mix(in srgb, var(--ok) 14%, var(--bg)); }}
++.banner--warn {{ background: color-mix(in srgb, var(--warn) 16%, var(--bg)); }}
++.banner--down {{ background: color-mix(in srgb, var(--down) 16%, var(--bg)); }}
++.services {{ list-style: none; padding: 0; margin: 0 auto; max-width: 640px; }}
++.service {{ display: flex; align-items: center; gap: .8rem; padding: 1rem; border-bottom: 1px solid color-mix(in srgb, var(--text) 15%, transparent); }}
++.service h2 {{ font-size: 1.05rem; margin: 0; flex: 1; }}
++.dot {{ width: .7rem; height: .7rem; flex: 0 0 .7rem; border-radius: 50%; background: var(--ok); }}
++[data-state="operational"] .dot {{ background: var(--ok); }}
++[data-state="degraded"] .dot {{ background: var(--warn); }}
++[data-state="outage"] .dot {{ background: var(--down); animation: pulse 1.5s ease-in-out infinite; }}
++[data-state="maintenance"] .dot {{ background: var(--maint); }}
++@keyframes pulse {{ 50% {{ opacity: .35; }} }}
++@media (prefers-reduced-motion: reduce) {{ .dot {{ animation: none; }} }}
++.state {{ white-space: nowrap; }}
++.note {{ flex-basis: 100%; margin: .35rem 0 0; }}
++.uptime {{ white-space: nowrap; font-size: .9rem; }}
++a {{ color: inherit; }}
++a:focus-visible {{ outline: 3px solid var(--warn); outline-offset: 3px; }}
++.empty {{ text-align: center; }}
++footer {{ margin-top: 2rem; font-size: .9rem; opacity: .8; }}
++@media (max-width: 480px) {{ .service {{ flex-direction: column; align-items: flex-start; }} }}
++</style>
++</head>
++<body>
++<header><h1>System status</h1></header>
++{banner}
++{content}
++<footer><time datetime="{_escape(generated_at)}">Updated {_escape(generated_at)}</time></footer>
++</body>
++</html>'''
++
++
++if __name__ == "__main__":
++    services = load(sys.argv[1])
++    print(render(services, datetime.now(timezone.utc).isoformat()))
